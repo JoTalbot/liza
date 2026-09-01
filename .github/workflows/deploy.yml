@@ -124,6 +124,11 @@ jobs:
             sudo bash -c 'grep -E "^(BOT_TOKEN|ALLOWED_USER_ID|GROQ_API_KEYS)=" /home/ubuntu/liza/.env > /opt/liza-mock/.telegram.env; chmod 600 /opt/liza-mock/.telegram.env'
             # права на память: systemd-сервисы (ubuntu) пишут в /opt/liza_data
             sudo chown -R ubuntu:ubuntu /opt/liza_data 2>/dev/null || true
+            # hermes в PATH (ручной запуск + инструменты Лизы)
+            sudo ln -sf /home/ubuntu/hermes-venv/bin/hermes /usr/local/bin/hermes 2>/dev/null || true
+            grep -q "hermes-venv/bin" /home/ubuntu/.bashrc 2>/dev/null || echo 'export PATH="$HOME/hermes-venv/bin:$PATH"' >> /home/ubuntu/.bashrc
+            # ubuntu в группе docker — Лизa видит контейнеры
+            sudo usermod -aG docker ubuntu 2>/dev/null || true
             sudo systemctl daemon-reload
             sudo systemctl enable --now liza-mock 2>/dev/null || true
             sudo systemctl enable --now telegram-hermes 2>/dev/null || true

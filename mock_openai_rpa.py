@@ -31,6 +31,7 @@ import logging
 import os
 import re
 import sqlite3
+import subprocess
 import threading
 import time
 import uuid
@@ -77,6 +78,26 @@ WIKI_MAX_CHARS = int(os.environ.get("MOCK_WIKI_MAX", "5000"))
 MEMORY_INJECT_MAX = int(os.environ.get("MOCK_MEMORY_INJECT_MAX", "5000"))
 RECENT_TURNS = int(os.environ.get("MOCK_RECENT_TURNS", "10"))
 RECENT_MEM_UPDATES = int(os.environ.get("MOCK_RECENT_MEM_UPDATES", "12"))
+
+# --- Инструменты: shell-команды Лизы (серверный помощник) ---
+# Лизa может выполнять команды на сервере двумя способами:
+#   * прямой режим — пользователь пишет команду (или с префиксом "!") —
+#     mock выполняет и подставляет вывод в контекст Gemini;
+#   * агентный режим — Gemini сама запрашивает [CMD: команда] в ответе,
+#     mock выполняет и делает финальный проход.
+SHELL_TIMEOUT = int(os.environ.get("MOCK_SHELL_TIMEOUT", "30"))
+SHELL_MAX_OUTPUT = int(os.environ.get("MOCK_SHELL_MAX_OUTPUT", "6000"))
+MAX_AGENT_TURNS = int(os.environ.get("MOCK_AGENT_TURNS", "3"))
+# безопасные команды для авто-детекта (все остальные — через явный префикс "!")
+SHELL_ALLOWED = {
+    "ls", "pwd", "cat", "head", "tail", "wc", "grep", "find", "tree", "du",
+    "df", "free", "uptime", "whoami", "uname", "id", "ps", "top", "htop",
+    "systemctl", "journalctl", "docker", "ss", "netstat", "ip", "ifconfig",
+    "mount", "lsblk", "lscpu", "nproc", "hostname", "date", "history",
+    "hermes", "python3", "python", "pip", "pip3", "git", "curl", "wget",
+    "lsusb", "lspci", "dmidecode", "vcgencmd", "df", "uname", "env", "printenv",
+}
+CMD_RE = re.compile(r"\[CMD:\s*(.*?)\]", re.IGNORECASE | re.DOTALL)
 
 
 class MemoryStore:
@@ -311,6 +332,69 @@ def _clean_answer(text: str) -> str:
 
 def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
+
+
+# ---------------------------------------------------------------- shell-инструменты Лизы
+def _run_shell(cmd: str) -> str:
+    """Выполняет команду на сервере (от имени ubuntu), возвращает вывод.
+
+    Безопасные ограничения: таймаут, лимит длины вывода; sudo запускается
+    в non-interactive режиме (без запроса пароля).
+    """
+    cmd = (cmd or "").strip().strip("`").strip()
+    if not cmd:
+        return "(пустая команда)"
+    if cmd.startswith("sudo "):
+        cmd = "sudo -n " + cmd[5:]
+    env = dict(os.environ)
+    # дополняем PATH, чтобы находились venv-утилиты (hermes и т.п.)
+    venv_bin = os.path.expanduser("~/hermes-venv/bin")
+    env["PATH"] = f"{venv_bin}:{env.get('PATH', '')}"
+    try:
+        proc = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True,
+            timeout=SHELL_TIMEOUT, env=env,
+        )
+        out = (proc.stdout or "").strip()
+        err = (proc.stderr or "").strip()
+        res = out if out else (err if err else f"(rc={proc.returncode}, пустой вывод)")
+        if out and err and proc.returncode != 0:
+            res = f"{out}\n{err}".strip()
+        res = f"(rc={proc.returncode})\n{res}"
+        if len(res) > SHELL_MAX_OUTPUT:
+            res = res[:SHELL_MAX_OUTPUT] + "\n…(вывод обрезан)"
+        return res
+    except subprocess.TimeoutExpired:
+        return f"(команда превысила {SHELL_TIMEOUT}с — прервана)"
+    except Exception as exc:  # noqa: BLE001
+        return f"(ошибка запуска: {exc})"
+
+
+def _looks_like_command(text: str) -> str | None:
+    """Если текст похож на shell-команду из безопасного списка — возвращает её."""
+    t = (text or "").strip()
+    if not t or len(t) > 300:
+        return None
+    if "\n" in t:  # многострочные сообщения — не команды
+        return None
+    if t.endswith(("?", "!", "—", ".", "…")):  # вопросы/утверждения — не команды
+        return None
+    words = t.split()
+    first = words[0].lower()
+    base = os.path.basename(first).lower()
+    if base in SHELL_ALLOWED or first in SHELL_ALLOWED:
+        return t
+    return None
+
+
+def _extract_shell_command(text: str) -> str | None:
+    """Извлекает команду из сообщения: принудительно по префиксу '!' или по виду."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    if t.startswith("!"):  # принудительный режим
+        return t[1:].strip()
+    return _looks_like_command(t)
 
 
 # ---------------------------------------------------------------- RPA-мост
@@ -568,7 +652,11 @@ def _build_messages(payload: dict) -> str:
         "с технических статусов, планов действий, перечислений проектов/локаций/"
         "оборудования, не упоминай файлы, протоколы, L0-L3 и Wiki-документы. "
         "Если узнаёшь что-то важное о Косте или его делах — можешь подтвердить "
-        "запоминание тегом [MEM_UPDATE: суть] в конце ответа.\n\n"
+        "запоминание тегом [MEM_UPDATE: суть] в конце ответа.\n"
+        "У тебя есть доступ к серверу: чтобы посмотреть статус, файлы, логи, "
+        "процессы или выполнить команду, оберни её в [CMD: команда] — вывод "
+        "придёт следующим сообщением, и ты дашь ответ по нему. В финальном "
+        "ответе тег [CMD] не оставляй.\n\n"
     )
 
     # ПАМЯТЬ (самое важное): вики + запомненные факты + недавний диалог
@@ -653,6 +741,7 @@ async def chat_completions(request: Request) -> Any:
     log.info("Запрос: model=%s stream=%s chars=%d", model, stream, len(prompt))
 
     # запоминаем последнее сообщение пользователя (в память Лизы)
+    last_user = ""
     try:
         last_user = next(
             (str(m.get("content", "")).strip()
@@ -665,9 +754,37 @@ async def chat_completions(request: Request) -> Any:
     except Exception:  # noqa: BLE001
         pass
 
+    # ПРЯМОЙ РЕЖИМ: пользователь прислал команду (или "!команда") — выполняем сразу
+    shell_cmd = _extract_shell_command(last_user)
+    if shell_cmd:
+        log.info("Shell-инструмент (прямой): %s", shell_cmd)
+        result = _run_shell(shell_cmd)
+        prompt += (
+            "\n\n[Инструмент] Пользователь прислал команду и ждёт её результат:\n"
+            f"$ {shell_cmd}\n{result}\n\n"
+            "Разбери вывод и ответь пользователю: что получилось, что важно. "
+            "Если команда не сработала — объясни и предложи, как сделать."
+        )
+
     try:
         assert bridge is not None
         content = await asyncio.wait_for(bridge.generate(prompt), timeout=GENERATION_TIMEOUT + 20)
+        # АГЕНТНЫЙ РЕЖИМ: Gemini запросила [CMD: ...] — выполняем и завершаем ответ
+        for turn in range(MAX_AGENT_TURNS):
+            cmds = [m.strip() for m in CMD_RE.findall(content) if m.strip()]
+            if not cmds:
+                break
+            log.info("Shell-инструмент (агент, ход %d): %s", turn + 1, cmds)
+            blocks = [f"$ {c}\n{_run_shell(c)}" for c in cmds]
+            agent_prompt = (
+                "Ты запросила команды на сервере. Результаты:\n\n"
+                + "\n\n".join(blocks)
+                + "\n\nОпираясь на них, дай пользователю финальный ответ "
+                  "(без тегов [CMD]). Если важно — запомни через [MEM_UPDATE: ...]."
+            )
+            content = await asyncio.wait_for(
+                bridge.generate(agent_prompt), timeout=GENERATION_TIMEOUT + 20
+            )
     except Exception as exc:  # noqa: BLE001
         log.exception("Ошибка генерации")
         return JSONResponse(
