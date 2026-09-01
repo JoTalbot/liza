@@ -11,27 +11,55 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Deploy to server
+      # Секреты подставляет сам GitHub Actions (${{ secrets.X }}),
+      # значения в логах маскируются автоматически
+      - name: Create .env from secrets
+        run: |
+          echo 'BOT_TOKEN=${{ secrets.BOT_TOKEN }}' > .env
+          echo 'ALLOWED_USER_ID=${{ secrets.ALLOWED_USER_ID }}' >> .env
+          echo 'GROQ_API_KEYS=${{ secrets.GROQ_API_KEYS }}' >> .env
+          wc -l .env
+
+      - name: Prepare server (clone code)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 129.213.177.56
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: BOT_TOKEN,ALLOWED_USER_ID,GROQ_API_KEYS
           script: |
             set -e
             cd /home/ubuntu
             rm -rf liza
             git clone --depth 1 https://github.com/JoTalbot/liza.git liza
-            cd liza
-            cat > .env <<EOM
-            BOT_TOKEN=$BOT_TOKEN
-            ALLOWED_USER_ID=$ALLOWED_USER_ID
-            GROQ_API_KEYS=$GROQ_API_KEYS
-            EOM
             sudo mkdir -p /opt/liza_data
+
+      - name: Upload .env to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: 129.213.177.56
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: ".env"
+          target: "/home/ubuntu/liza"
+
+      - name: Build and run container
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 129.213.177.56
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            cd /home/ubuntu/liza
+            grep -q '^BOT_TOKEN=.\+' .env || { echo '!! BOT_TOKEN пуст'; exit 1; }
+            grep -q '^ALLOWED_USER_ID=.\+' .env || { echo '!! ALLOWED_USER_ID пуст'; exit 1; }
+            grep -q '^GROQ_API_KEYS=.\+' .env || { echo '!! GROQ_API_KEYS пуст'; exit 1; }
+            echo '== .env на месте, значения непустые =='
             sudo docker stop liza-bot 2>/dev/null || true
             sudo docker rm liza-bot 2>/dev/null || true
             sudo docker build -t liza-bot .
             sudo docker run -d --name liza-bot --restart unless-stopped -v /opt/liza_data:/data --env-file .env liza-bot
+            sleep 6
             sudo docker ps --filter name=liza-bot
+            echo '== Логи =='
+            sudo docker logs liza-bot 2>&1 | tail -8
