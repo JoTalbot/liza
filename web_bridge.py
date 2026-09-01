@@ -11,9 +11,12 @@ URL которого хранится в /data/chat_session.json. При каж�
 import asyncio
 import json
 import logging
+import socket
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
 
@@ -114,11 +117,45 @@ class WebBridge:
         if self._connected and self._page:
             return
         self._pw = await async_playwright().start()
-        self._browser = await self._pw.chromium.connect_over_cdp(self.cdp_url)
+        endpoint = await self._resolve_endpoint(self.cdp_url)
+        self._browser = await self._pw.chromium.connect_over_cdp(endpoint)
         ctx = self._browser.contexts[0] if self._browser.contexts else await self._browser.new_context()
         self._page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         self._connected = True
-        log.info("Подключено к Chromium CDP: %s", self.cdp_url)
+        log.info("Подключено к Chromium CDP: %s (endpoint=%s)", self.cdp_url, endpoint)
+
+    async def _resolve_endpoint(self, url: str) -> str:
+        """Chromium 151+ отклоняет CDP HTTP-запросы, где Host != IP/localhost
+        (защита от DNS-rebinding). Поэтому hostname резолвится в IP, а
+        WebSocket-адрес браузера берётся из /json/version и переписывается
+        на рабочий IP:port (socat-проброс 9222 -> 127.0.0.1:9223)."""
+        if url.startswith("ws://") or url.startswith("wss://"):
+            return url
+        p = urlparse(url)
+        host = p.hostname
+        port = p.port or 9222
+        ip = host
+        if host and host not in ("localhost", "127.0.0.1", "::1"):
+            try:
+                ip = socket.gethostbyname(host)
+            except Exception:  # noqa: BLE001
+                ip = host
+        try:
+            req = urllib.request.Request(
+                f"http://{ip}:{port}/json/version",
+                headers={"Host": ip},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                info = json.loads(resp.read().decode("utf-8", "replace"))
+            raw_ws = (info.get("webSocketDebuggerUrl") or "").strip()
+            if raw_ws:
+                wp = urlparse(raw_ws)
+                ws = f"ws://{ip}:{port}{wp.path}"
+                log.info("CDP endpoint через /json/version: %s", ws)
+                return ws
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Не удалось получить /json/version (%s) — fallback на http://%s:%s", exc, ip, port)
+        return f"http://{ip}:{port}"
 
     async def _cleanup(self) -> None:
         for obj in (self._browser, self._pw):
