@@ -3,7 +3,6 @@ import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.enums import ChatAction
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -45,6 +44,60 @@ def _clip(text: str) -> str:
 def _sync(kind: str, content: str) -> None:
     """Фоновая синхронизация в Google Docs (не блокирует ответ бота)."""
     asyncio.create_task(google_sync.append_entry(kind, content))
+
+
+# ---------- анимированное статусное сообщение ----------
+SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+
+class StatusAnimator:
+    """Анимированная статусная надпись: спиннер + сменяемый текст."""
+
+    def __init__(self, message: Message):
+        self.message = message
+        self.base = ""
+        self._task: asyncio.Task | None = None
+
+    async def _run(self) -> None:
+        i = 0
+        while True:
+            try:
+                await self.message.edit_text(f"{SPINNER_FRAMES[i % len(SPINNER_FRAMES)]} {self.base}")
+            except Exception:  # noqa: BLE001 — Telegram ругается на одинаковый текст
+                pass
+            i += 1
+            await asyncio.sleep(0.6)
+
+    def set_text(self, base: str) -> None:
+        """Меняет подпись (анимация продолжает крутиться)."""
+        self.base = base
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._run())
+
+    async def show_final(self, text: str) -> None:
+        """Останавливает анимацию и показывает финальный текст."""
+        await self._stop()
+        try:
+            await self.message.edit_text(text)
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def stop_and_delete(self) -> None:
+        """Останавливает анимацию и удаляет сообщение."""
+        await self._stop()
+        try:
+            await self.message.delete()
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _stop(self) -> None:
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
 
 
 def _process_memory_updates() -> int:
@@ -265,14 +318,25 @@ async def cmd_dump(message: Message) -> None:
 
 
 async def _reply_to(message: Message, status: Message | None, user_input: str, note_id: int) -> None:
-    """Конвейер: Web Bridge (Gemini) → при ошибке Groq-fallback → сохранить → ответить."""
-    reply = None
-    source = "unknown"
+    """Конвейер: статус-анимация → Web Bridge (Gemini) → fallback Groq → ответ.
+
+    Этапы надписи:
+      «Запрашиваю модель» → «Ожидание ответа модели» → «✅ Ответ получен!»
+    Затем отправляется сам ответ, статусная надпись удаляется.
+    """
+    if status is None:
+        status = await message.answer("⏳")
+    anim = StatusAnimator(status)
+    anim.set_text("Запрашиваю модель")
+
+    def on_stage(stage: str) -> None:
+        # вызывается из web_bridge (sending → waiting → done)
+        if stage == "waiting":
+            anim.set_text("Ожидание ответа модели")
+
+    bridge.stage_callback = on_stage
+
     try:
-        if status:
-            await status.edit_text("🌐 Связываюсь с Gemini…")
-        else:
-            await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
         reply = await bridge.send_prompt_to_chat(user_input)
         if not reply:
             raise RuntimeError("Пустой ответ от Gemini")
@@ -284,9 +348,8 @@ async def _reply_to(message: Message, status: Message | None, user_input: str, n
             log.info("Обработано MEM_UPDATE: %d", n_upd)
     except Exception as exc:  # noqa: BLE001
         log.warning("Web Bridge недоступен (%s) — fallback к Groq", exc)
+        anim.set_text("Запрашиваю модель (запасной канал)")
         try:
-            if status:
-                await status.edit_text("💭 Думаю…")
             reply = await asyncio.to_thread(brain.reply, db, note_id, user_input)
             source = "groq"
         except Exception as exc2:  # noqa: BLE001
@@ -297,13 +360,12 @@ async def _reply_to(message: Message, status: Message | None, user_input: str, n
     db.add_note("assistant", reply)
     _sync("assistant", reply)
 
-    if status:
-        try:
-            await status.edit_text(_clip(reply))
-        except Exception:  # noqa: BLE001
-            await message.answer(_clip(reply))
-    else:
+    # «Ответ получен» → отправляем ответ → удаляем статус
+    await anim.show_final("✅ Ответ получен!")
+    try:
         await message.answer(_clip(reply))
+    finally:
+        await anim.stop_and_delete()
 
 
 @router.message(F.text)

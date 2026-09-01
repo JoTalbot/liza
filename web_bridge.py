@@ -152,6 +152,7 @@ class WebBridge:
         self.current_model = ""
         self.memory_updates: list[str] = []   # извлечённые [MEM_UPDATE: ...] последнего ответа
         self._init_confirmation = ""          # текст подтверждения после стартового промпта
+        self.stage_callback = None            # опц.: вызывается на этапах sending/waiting/done
 
     # ---------- подключение ----------
     async def connect(self) -> None:
@@ -573,12 +574,23 @@ class WebBridge:
                 log.info("MEM_UPDATE: извлечено %d обновлений памяти", len(updates))
             return reply
 
+    def _emit_stage(self, stage: str) -> None:
+        """Уведомляет внешний код о смене этапа: sending → waiting → done."""
+        cb = self.stage_callback
+        if cb:
+            try:
+                cb(stage)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("stage_callback(%s) error: %s", stage, exc)
+
     async def _submit_and_extract(self, text: str) -> str:
         """Вводит промпт, запускает генерацию, ждёт завершения и возвращает сырой ответ."""
         text = (text or "").strip()
         if not text:
             raise RuntimeError("Пустой промпт")
         self._last_prompt = text
+
+        self._emit_stage("sending")
 
         box = await self._find_input()
         if not box:
@@ -587,6 +599,8 @@ class WebBridge:
         await box.click()
         await self._page.keyboard.type(text, delay=1)
         await self._page.keyboard.press("Enter")
+
+        self._emit_stage("waiting")
 
         started = await self._wait_stop_button(timeout=10)
         if not started:
@@ -608,6 +622,8 @@ class WebBridge:
             raise RuntimeError("Пустой ответ от Gemini")
         if _looks_like_interface(reply):
             raise RuntimeError("Ответ Gemini не распознан (интерфейс изменился)")
+
+        self._emit_stage("done")
 
         # сохраняем актуальный URL чата (появляется id после первого сообщения)
         try:
