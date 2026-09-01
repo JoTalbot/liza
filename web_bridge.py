@@ -218,6 +218,31 @@ class WebBridge:
         u = self._page.url.lower()
         return "accounts.google.com" in u or "servicelogin" in u or "signin" in u
 
+    async def _has_input_fast(self) -> bool:
+        """Быстрая проверка: есть ли поле ввода промпта (без долгих ожиданий)."""
+        for sel in INPUT_SELECTORS:
+            try:
+                if await self._page.locator(sel).first.count():
+                    return True
+            except Exception:  # noqa: BLE001
+                continue
+        return False
+
+    async def requires_login(self) -> bool:
+        """True, если нужен вход в Google: страница входа ИЛИ промо-обложка
+        «Meet Gemini / Sign in» без поля ввода."""
+        try:
+            if self._is_login_page():
+                return True
+            if await self._has_input_fast():
+                return False
+            body = ((await self._page.locator("body").inner_text()) or "").lower()
+            if "sign in" in body or "meet gemini" in body:
+                return True
+        except Exception as exc:  # noqa: BLE001
+            log.debug("requires_login: %s", exc)
+        return False
+
     # ---------- инициализация выделенного чата ----------
     async def ensure_dedicated_chat(self) -> bool:
         """Открывает сохранённый чат или создаёт новый (Advanced + Extended Thinking)."""
@@ -227,7 +252,7 @@ class WebBridge:
             try:
                 await self._page.goto(saved_url, wait_until="domcontentloaded", timeout=60000)
                 await asyncio.sleep(3)
-                if self._is_login_page():
+                if await self.requires_login():
                     log.warning("Google требует вход — откройте noVNC (http://<IP>:6080/vnc.html) и войдите в аккаунт")
                     return False
                 self.chat_url = self._page.url
@@ -239,7 +264,7 @@ class WebBridge:
         try:
             await self._page.goto(GEMINI_APP_URL, wait_until="domcontentloaded", timeout=60000)
             await asyncio.sleep(4)
-            if self._is_login_page():
+            if await self.requires_login():
                 log.warning("Требуется вход в Google: http://<IP>:6080/vnc.html — войдите в аккаунт, затем напишите боту снова")
                 return False
 
@@ -281,7 +306,7 @@ class WebBridge:
             except Exception as exc:  # noqa: BLE001
                 log.warning("goto %s: %s", GEMINI_APP_URL, exc)
             await asyncio.sleep(3)
-            if self._is_login_page():
+            if await self.requires_login():
                 raise RuntimeError("Требуется вход в Google (noVNC)")
             await self._try_click_new_chat()
             await asyncio.sleep(2)
@@ -295,6 +320,8 @@ class WebBridge:
     # ---------- статус модели ----------
     async def get_model_status(self) -> str:
         """Best-effort: определяет текущую модель и режим Extended Thinking из UI."""
+        if await self.requires_login():
+            return "Модель: — (нужен вход в Google)"
         parts = []
         try:
             model = await self._detect_model_name()
@@ -452,6 +479,8 @@ class WebBridge:
             await self.ensure_ready()
             if not await self.ensure_dedicated_chat():
                 raise RuntimeError("Нет доступа к Gemini (требуется вход в Google через noVNC)")
+            if await self.requires_login():
+                raise RuntimeError("Нет входа в Google — откройте http://<IP>:6080/vnc.html и войдите в аккаунт")
 
             text = (text or "").strip()
             if not text:

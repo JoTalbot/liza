@@ -72,12 +72,17 @@ async def _status_text() -> str:
     cdp = "✅ подключено" if bridge._connected else "⏳ не подключено"
     chat = _current_chat_url()
     try:
+        login = "✅" if not await bridge.requires_login() else "❌ нужен вход (noVNC)"
+    except Exception:  # noqa: BLE001
+        login = "?"
+    try:
         model = await bridge.get_model_status()
     except Exception as exc:  # noqa: BLE001
         model = f"Модель: ошибка определения ({exc})"
     lines = [
         "🔧 **Статус:**",
         f"• CDP: {cdp}",
+        f"• Вход в Google: {login}",
         f"• Чат: `{chat}`",
         f"• {model}",
         f"• Память: {db.count_notes()} записей",
