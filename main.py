@@ -7,6 +7,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import config
+import daily_digest
 import google_sync
 from ai_brain import GroqBrain
 from database import Database
@@ -191,6 +192,7 @@ async def cmd_start(message: Message) -> None:
         "• /status — статус Web Bridge (кнопки: новый чат / память / обновить)\n"
         "• /newchat — создать и инициализировать новый выделенный чат\n"
         "• /memory [n] — последние n обновлений памяти (MEM_UPDATE)\n"
+        "• /digest — собрать дайджест дня прямо сейчас\n"
         "• /dump [n] — последние n записей из памяти",
         parse_mode="Markdown",
     )
@@ -287,6 +289,30 @@ async def cb_memory(call: CallbackQuery) -> None:
         await call.message.edit_text(text, parse_mode="Markdown", reply_markup=_status_kb())
     except Exception:  # noqa: BLE001 — текст не изменился
         await call.message.answer(text, parse_mode="Markdown", reply_markup=_status_kb())
+
+
+@router.message(Command("digest"))
+async def cmd_digest(message: Message) -> None:
+    if not is_allowed(message):
+        await message.answer("⛔ Доступ запрещён.")
+        return
+    status = await message.answer("📊 Собираю дайджест дня…")
+    try:
+        result = await daily_digest.build_and_append(db)
+        counts = result["counts"]
+        text = (
+            f"📊 Дайджест дня собран и записан:\n`{result['path']}`\n\n"
+            f"Записи за сутки: 👤 {counts.get('user', 0)} · "
+            f"🤖 {counts.get('assistant', 0)} · 🧠 {counts.get('mem', 0)}\n\n"
+            f"```\n{_clip(result['text'])}\n```"
+        )
+        await status.edit_text(text, parse_mode="Markdown")
+    except Exception as exc:  # noqa: BLE001
+        log.exception("digest failed")
+        try:
+            await status.edit_text(f"❌ Не удалось собрать дайджест: {exc}")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @router.message(Command("dump"))
@@ -418,6 +444,13 @@ async def on_other(message: Message) -> None:
 async def main() -> None:
     dp.include_router(router)
     await bot.delete_webhook(drop_pending_updates=True)
+
+    # ежедневный дайджест (по умолчанию 23:59) — фоновая задача
+    if config.DAILY_DIGEST_ENABLED:
+        asyncio.create_task(
+            daily_digest.digest_loop(db, config.DAILY_DIGEST_TIME),
+            name="daily_digest",
+        )
 
     # пробуем подключиться к браузеру при старте (не фатально)
     try:

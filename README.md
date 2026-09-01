@@ -27,11 +27,14 @@ browser/Dockerfile + start.sh — браузерный стек (Chromium + noVN
 docker-compose.yml            — оркестрация browser + bot
 web_bridge.py                 — Playwright CDP, выделенный чат Gemini,
                                 Extended Thinking, /data/chat_session.json
-main.py                       — Telegram: текст/голос → Web Bridge (fallback Groq)
+main.py                       — Telegram: текст/голос → Web Bridge (fallback Groq),
+                                + планировщик ежедневного дайджеста
 ai_brain.py                   — Groq chat (fallback)
 google_sync.py                — реалтайм-синк в Google Doc (graceful-fail)
 transcriber.py                — .ogg → текст (Groq Whisper)
 database.py                   — SQLite: notes(id, timestamp, type, content)
+daily_digest.py               — ежедневные итоги дня (23:59) в
+                                /data/chronicles/YYYY-MM_Digests.md
 ```
 
 ## Быстрый старт

@@ -45,3 +45,10 @@ GOOGLE_DOC_ID = os.environ.get("GOOGLE_DOC_ID", "").strip()
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data").strip()
 DB_PATH = os.environ.get("DB_PATH", os.path.join(DATA_DIR, "context.db"))
+
+# --- Ежедневный дайджест (итоги дня в /data/chronicles/) ---
+DAILY_DIGEST_ENABLED = os.environ.get("DAILY_DIGEST_ENABLED", "1").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+DAILY_DIGEST_TIME = os.environ.get("DAILY_DIGEST_TIME", "23:59").strip() or "23:59"
+CHRONICLES_DIR = os.environ.get("CHRONICLES_DIR", os.path.join(DATA_DIR, "chronicles"))

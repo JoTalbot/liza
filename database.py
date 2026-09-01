@@ -2,7 +2,7 @@
 import os
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import config
@@ -69,3 +69,18 @@ class Database:
         )
         rows = cur.fetchall()
         return list(reversed(rows))
+
+    def notes_since(self, since: datetime | None = None) -> list[sqlite3.Row]:
+        """Все записи с указанного момента (по умолчанию — за последние 24 часа),
+        в хронологическом порядке (старые → новые). Для ежедневного дайджеста."""
+        if since is None:
+            since = datetime.now(timezone.utc) - timedelta(hours=24)
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        since_iso = since.isoformat(timespec="seconds")
+        cur = self._conn().execute(
+            "SELECT id, timestamp, type, content FROM notes "
+            "WHERE timestamp >= ? ORDER BY id ASC",
+            (since_iso,),
+        )
+        return cur.fetchall()

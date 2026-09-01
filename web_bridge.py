@@ -27,7 +27,12 @@ import config
 log = logging.getLogger(__name__)
 
 CHAT_SESSION_FILE = Path(config.DATA_DIR) / "chat_session.json"
-GEMINI_APP_URL = "https://gemini.google.com/app"
+# GEMINI_GEM_URL — прямой URL к кастомному Gem «Liza» (опционально).
+# Если не задан — обычный чат Gemini (https://gemini.google.com/app).
+GEMINI_APP_URL = (
+    os.environ.get("GEMINI_GEM_URL", "").strip()
+    or "https://gemini.google.com/app"
+)
 
 # Стартовый промпт авто-инициализации: персона Лизы + инструкции с Google Drive
 GEMINI_DRIVE_FOLDER = os.environ.get(
