@@ -29,10 +29,11 @@ log = logging.getLogger(__name__)
 CHAT_SESSION_FILE = Path(config.DATA_DIR) / "chat_session.json"
 # GEMINI_GEM_URL — прямой URL к кастомному Gem «Liza» (опционально).
 # Если не задан — обычный чат Gemini (https://gemini.google.com/app).
-GEMINI_APP_URL = (
-    os.environ.get("GEMINI_GEM_URL", "").strip()
-    or "https://gemini.google.com/app"
-)
+GEMINI_GEM_URL = os.environ.get("GEMINI_GEM_URL", "").strip()
+GEMINI_APP_URL = GEMINI_GEM_URL or "https://gemini.google.com/app"
+# При работе через Gem ссылка /gem/... сама открывает НОВЫЙ чат с этим гемом,
+# поэтому кнопку «Новый чат» в UI не кликаем (иначе рискуем сбросить гем).
+USING_GEM = bool(GEMINI_GEM_URL)
 
 # Стартовый промпт авто-инициализации: персона Лизы + инструкции с Google Drive
 GEMINI_DRIVE_FOLDER = os.environ.get(
@@ -344,8 +345,11 @@ class WebBridge:
                 log.warning("Требуется вход в Google: http://<IP>:6080/vnc.html — войдите в аккаунт, затем напишите боту снова")
                 return False
 
-            await self._try_click_new_chat()
-            await asyncio.sleep(1)
+            # по ссылке Gem уже открывается свежий чат с кастомным Gem —
+            # «Новый чат» не кликаем, чтобы не сбросить выбранный Gem
+            if not USING_GEM:
+                await self._try_click_new_chat()
+                await asyncio.sleep(1)
             await self._try_enable_extended_thinking()
 
             self.chat_url = self._page.url
@@ -394,8 +398,12 @@ class WebBridge:
             if await self.requires_login():
                 raise RuntimeError("Требуется вход в Google (noVNC)")
 
-            await self._try_click_new_chat()
-            await asyncio.sleep(2)
+            if USING_GEM:
+                # ссылка /gem/... уже открыла новый чат с гемом Лизы
+                await asyncio.sleep(2)
+            else:
+                await self._try_click_new_chat()
+                await asyncio.sleep(2)
             await self._try_enable_extended_thinking()
             await asyncio.sleep(1)
 
