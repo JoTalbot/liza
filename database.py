@@ -46,3 +46,13 @@ class Database:
 
     def count_notes(self) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+
+    def last_mem_updates(self, n: int = 10) -> list[sqlite3.Row]:
+        """Последние n обновлений памяти (type=MEM_UPDATE), старые → новые."""
+        cur = self.conn.execute(
+            "SELECT id, timestamp, type, content FROM notes "
+            "WHERE type='MEM_UPDATE' ORDER BY id DESC LIMIT ?",
+            (n,),
+        )
+        rows = cur.fetchall()
+        return list(reversed(rows))

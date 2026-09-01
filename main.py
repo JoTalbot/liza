@@ -66,9 +66,24 @@ def _status_kb() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="🆕 Новый чат", callback_data="liza:new_chat"),
                 InlineKeyboardButton(text="🔄 Обновить статус", callback_data="liza:refresh"),
-            ]
+            ],
+            [
+                InlineKeyboardButton(text="🧠 Память", callback_data="liza:memory"),
+            ],
         ]
     )
+
+
+def _memory_text(n: int = 10) -> str:
+    """Текст последних n обновлений памяти (MEM_UPDATE)."""
+    rows = db.last_mem_updates(n)
+    if not rows:
+        return "🧠 Память пуста — обновлений `[MEM_UPDATE]` пока нет."
+    lines = [f"🧠 Последние **{len(rows)}** обновлений памяти:"]
+    for i, r in enumerate(rows, start=1):
+        content = (r["content"] or "").replace("\n", " ")[:200]
+        lines.append(f"{i}. {content}")
+    return "\n".join(lines)
 
 
 def _current_chat_url() -> str:
@@ -119,8 +134,9 @@ async def cmd_start(message: Message) -> None:
         "Пиши текстом или голосовыми — я отвечаю и запоминаю всё.\n\n"
         "Команды:\n"
         "• /start — это сообщение\n"
-        "• /status — статус Web Bridge (кнопки: новый чат / обновить)\n"
+        "• /status — статус Web Bridge (кнопки: новый чат / память / обновить)\n"
         "• /newchat — создать и инициализировать новый выделенный чат\n"
+        "• /memory [n] — последние n обновлений памяти (MEM_UPDATE)\n"
         "• /dump [n] — последние n записей из памяти",
         parse_mode="Markdown",
     )
@@ -184,6 +200,35 @@ async def cb_refresh(call: CallbackQuery) -> None:
         return
     await call.answer("Обновляю…")
     text = await _status_text()
+    try:
+        await call.message.edit_text(text, parse_mode="Markdown", reply_markup=_status_kb())
+    except Exception:  # noqa: BLE001 — текст не изменился
+        await call.message.answer(text, parse_mode="Markdown", reply_markup=_status_kb())
+
+
+@router.message(Command("memory"))
+async def cmd_memory(message: Message) -> None:
+    if not is_allowed(message):
+        await message.answer("⛔ Доступ запрещён.")
+        return
+    args = message.text.split()
+    n = 10
+    if len(args) > 1:
+        try:
+            n = int(args[1])
+        except ValueError:
+            n = 10
+    n = max(1, min(n, 50))
+    await message.answer(_memory_text(n), parse_mode="Markdown", reply_markup=_status_kb())
+
+
+@router.callback_query(F.data == "liza:memory")
+async def cb_memory(call: CallbackQuery) -> None:
+    if not is_allowed_uid(call.from_user.id if call.from_user else None):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    await call.answer("Читаю память…")
+    text = _memory_text()
     try:
         await call.message.edit_text(text, parse_mode="Markdown", reply_markup=_status_kb())
     except Exception:  # noqa: BLE001 — текст не изменился
