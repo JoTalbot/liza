@@ -72,7 +72,12 @@ async def _status_text() -> str:
     cdp = "✅ подключено" if bridge._connected else "⏳ не подключено"
     chat = _current_chat_url()
     try:
-        login = "✅" if not await bridge.requires_login() else "❌ нужен вход (noVNC)"
+        if await bridge.has_google_session():
+            login = "✅ аккаунт"
+        elif await bridge.requires_login():
+            login = "❌ нужен вход (noVNC)"
+        else:
+            login = "⚠️ анонимный режим"
     except Exception:  # noqa: BLE001
         login = "?"
     try:

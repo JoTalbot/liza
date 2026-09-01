@@ -228,6 +228,15 @@ class WebBridge:
                 continue
         return False
 
+    async def has_google_session(self) -> bool:
+        """True, если в браузере есть сессионные куки Google (SID/SAPISID/1PSID)."""
+        try:
+            cookies = await self._page.context.cookies()
+            names = {c["name"] for c in cookies if "google" in c["domain"]}
+            return bool(names & {"SID", "__Secure-1PSID", "SAPISID", "__Secure-3PSID"})
+        except Exception:  # noqa: BLE001
+            return False
+
     async def requires_login(self) -> bool:
         """True, если нужен вход в Google: страница входа ИЛИ промо-обложка
         «Meet Gemini / Sign in» без поля ввода."""
