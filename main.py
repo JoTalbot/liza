@@ -426,6 +426,13 @@ async def main() -> None:
     except Exception as exc:  # noqa: BLE001
         log.warning("Web Bridge недоступен при старте: %s", exc)
 
+    # обновляем вики-файлы Liza_Brain с Google Drive (best-effort, фоном не блокируем)
+    try:
+        import drive_sync
+        await drive_sync.sync_wiki_from_drive(bridge)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Google Drive sync при старте не удался: %s", exc)
+
     log.info(
         "Bot started | allowed=%s | cdp=%s | google_sync=%s | chat_url=%s",
         sorted(ALLOWED),

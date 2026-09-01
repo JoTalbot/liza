@@ -34,15 +34,24 @@ GEMINI_DRIVE_FOLDER = os.environ.get(
     "GEMINI_DRIVE_FOLDER",
     "https://drive.google.com/drive/folders/12k3z0fdt_c_f6KkWPeKxZ7LD1kvaWg8P",
 )
-STARTER_PROMPT = (
-    '@Google Drive найди и прочитай все файлы и инструкции из папки "Liza_Brain" '
-    f"({GEMINI_DRIVE_FOLDER}). "
-    "Ты — Лиза, мой автономный ассистент и второй мозг. "
-    "Загрузи личность, память и следуй всем инструкциям из этой папки. "
-    "Правило: если появляется важная новая информация для сохранения в память, "
-    "добавь в конце ответа тег [MEM_UPDATE: суть обновления]. "
-    "Подтверди готовность!"
-)
+
+# Базовый промпт (без контекста файлов — он подставляется при инициализации)
+def build_starter_prompt(context: str = "") -> str:
+    base = (
+        "Ты — Лиза, мой автономный ассистент и второй мозг. "
+        "Загрузи личность, память и следуй всем инструкциям. "
+        "Правило: если появляется важная новая информация для сохранения в память, "
+        "добавь в конце ответа тег [MEM_UPDATE: суть обновления]. "
+        "Подтверди готовность!"
+    )
+    if context:
+        return (
+            f"Прочитай и запомни мои вики-файлы с Google Drive (папка Liza_Brain, "
+            f"{GEMINI_DRIVE_FOLDER}):\n\n{context}\n\n{base}"
+        )
+    return f"{base}\n\n(Мои вики-файлы недоступны — работай по общей памяти.)"
+
+STARTER_PROMPT = build_starter_prompt()
 
 # Тег памяти: [MEM_UPDATE: суть обновления] в конце ответа модели
 MEM_UPDATE_RE = re.compile(r"\[MEM_UPDATE:\s*(.*?)\]", re.IGNORECASE | re.DOTALL)
@@ -353,7 +362,7 @@ class WebBridge:
 
         1) создаёт новый чат Gemini;
         2) выбирает самую продвинутую модель и включает Extended Thinking;
-        3) отправляет стартовый промпт (персона Лизы + @Google Drive LizaBrain);
+        3) отправляет стартовый промпт с вики-файлами Liza_Brain (Google Drive);
         4) ждёт подтверждение модели;
         5) сохраняет URL чата в /data/chat_session.json.
         """
@@ -372,9 +381,13 @@ class WebBridge:
             await self._try_enable_extended_thinking()
             await asyncio.sleep(1)
 
-            # стартовый промпт активации персоны + привязки Google Drive
+            # стартовый промпт: персона + вики-файлы Liza_Brain с Google Drive
             try:
-                confirmation = await self._submit_and_extract(STARTER_PROMPT)
+                import drive_sync
+                context = drive_sync.build_persona_context()
+                prompt = build_starter_prompt(context)
+                log.info("Стартовый промпт: %d симв. вики-контекста", len(context))
+                confirmation = await self._submit_and_extract(prompt)
                 self._init_confirmation = confirmation
                 log.info(
                     "Инициализация Лизы: подтверждение получено (%d симв.): %.120s",
