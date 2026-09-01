@@ -47,7 +47,7 @@ jobs:
           source: ".env"
           target: "/home/ubuntu/liza"
 
-      - name: Compose up
+      - name: Deploy bot (without touching browser)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 129.213.177.56
@@ -59,14 +59,21 @@ jobs:
             grep -q '^BOT_TOKEN=.\+' .env || { echo '!! BOT_TOKEN пуст'; exit 1; }
             grep -q '^ALLOWED_USER_ID=.\+' .env || { echo '!! ALLOWED_USER_ID пуст'; exit 1; }
             grep -q '^GROQ_API_KEYS=.\+' .env || { echo '!! GROQ_API_KEYS пуст'; exit 1; }
-            sudo docker compose version
-            # ВАЖНО: пересоздаём ТОЛЬКО бота. Браузер не трогаем —
-            # иначе теряется сессия входа в Google (session-куки в памяти Chrome).
-            # Браузер пересобирается отдельно, только при изменении browser/.
-            sudo docker compose up -d --build bot
+            # ВАЖНО: пересоздаём ТОЛЬКО бота (docker build/run напрямую).
+            # Контейнер liza-browser НЕ трогаем вообще — иначе теряется
+            # сессия входа в Google (session-куки живут в памяти Chrome).
+            sudo docker build -t liza-bot .
+            sudo docker stop -t 15 liza-bot 2>/dev/null || true
+            sudo docker rm liza-bot 2>/dev/null || true
+            sudo docker run -d --name liza-bot --restart unless-stopped \
+              --network liza_default \
+              -v /opt/liza_data:/data \
+              --env-file .env \
+              -e CDP_URL=http://browser:9222 \
+              liza-bot
             sleep 15
-            echo '== docker compose ps =='
-            sudo docker compose ps
+            echo '== docker ps =='
+            sudo docker ps --filter name=liza --format 'table {{.Names}}\t{{.Status}}'
             echo '== bot logs =='
             sudo docker logs liza-bot 2>&1 | tail -10
             echo '== CDP check =='
