@@ -109,24 +109,25 @@ jobs:
           script: |
             set -e
             sudo mkdir -p /opt/liza-mock
-            sudo cp /home/ubuntu/liza/mock_openai_rpa.py /home/ubuntu/liza/telegram_hermes_bridge.py /opt/liza-mock/ 2>/dev/null || true
+            sudo cp /home/ubuntu/liza/mock_openai_rpa.py /home/ubuntu/liza/telegram_hermes_bridge.py /home/ubuntu/liza/daily_memory_digest.py /opt/liza-mock/ 2>/dev/null || true
             sudo chown -R ubuntu:ubuntu /opt/liza-mock
             cd /opt/liza-mock
             if [ ! -d venv ]; then
               python3 -m venv venv
             fi
             ./venv/bin/pip install -q --upgrade pip
-            ./venv/bin/pip install -q fastapi "uvicorn[standard]" playwright "aiogram>=3.7,<4" || true
-            # systemd-юниты
-            sudo cp /home/ubuntu/liza/systemd/liza-mock.service /etc/systemd/system/ 2>/dev/null || true
-            sudo cp /home/ubuntu/liza/systemd/telegram-hermes.service /etc/systemd/system/ 2>/dev/null || true
-            # .telegram.env из .env (токен того же бота)
-            sudo bash -c 'grep -E "^(BOT_TOKEN|ALLOWED_USER_ID)=" /home/ubuntu/liza/.env > /opt/liza-mock/.telegram.env; chmod 600 /opt/liza-mock/.telegram.env'
+            ./venv/bin/pip install -q fastapi "uvicorn[standard]" playwright "aiogram>=3.7,<4" groq || true
+            # systemd-юниты (mock, telegram-мост, дневной дайджест-таймер)
+            sudo cp /home/ubuntu/liza/systemd/liza-mock.service /home/ubuntu/liza/systemd/telegram-hermes.service /etc/systemd/system/ 2>/dev/null || true
+            sudo cp /home/ubuntu/liza/systemd/liza-digest.service /home/ubuntu/liza/systemd/liza-digest.timer /etc/systemd/system/ 2>/dev/null || true
+            # .telegram.env из .env (токен того же бота + groq для голосовых)
+            sudo bash -c 'grep -E "^(BOT_TOKEN|ALLOWED_USER_ID|GROQ_API_KEYS)=" /home/ubuntu/liza/.env > /opt/liza-mock/.telegram.env; chmod 600 /opt/liza-mock/.telegram.env'
             # права на память: systemd-сервисы (ubuntu) пишут в /opt/liza_data
             sudo chown -R ubuntu:ubuntu /opt/liza_data 2>/dev/null || true
             sudo systemctl daemon-reload
             sudo systemctl enable --now liza-mock 2>/dev/null || true
             sudo systemctl enable --now telegram-hermes 2>/dev/null || true
+            sudo systemctl enable --now liza-digest.timer 2>/dev/null || true
             sudo systemctl restart liza-mock telegram-hermes 2>/dev/null || true
             sleep 3
             echo '== mock health =='

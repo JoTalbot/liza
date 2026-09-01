@@ -194,8 +194,27 @@ class MemoryStore:
         except Exception:  # noqa: BLE001
             return ""
 
+    def last_digest(self, max_chars: int = 1500) -> str:
+        """Хвост последнего дневного дайджеста (chronicles) — краткие итоги."""
+        try:
+            d = Path("/opt/liza_data/chronicles")
+            if not d.exists():
+                return ""
+            files = sorted(d.glob("*_Digests.md"))
+            if not files:
+                return ""
+            text = files[-1].read_text(encoding="utf-8", errors="ignore")
+            # берём последний блок «### 📅 ...» в файле
+            idx = text.rfind("### 📅")
+            if idx == -1:
+                return text[-max_chars:]
+            return text[idx : idx + max_chars]
+        except Exception:  # noqa: BLE001
+            return ""
+
     def build_context(self) -> str:
-        """Собирает блок памяти: база знаний (вики) + запомненные факты + недавний диалог."""
+        """Собирает блок памяти: база знаний (вики) + запомненные факты +
+        недавний диалог + итоги последнего дня (хроника)."""
         parts: list[str] = []
         w = self.wiki_text()
         if w:
@@ -206,6 +225,9 @@ class MemoryStore:
         t = self.recent_turns()
         if t:
             parts.append("НЕДАВНИЙ ДИАЛОГ:\n" + "\n".join(t))
+        dig = self.last_digest()
+        if dig:
+            parts.append("ИТОГИ ПОСЛЕДНЕГО ДНЯ (хроника):\n" + dig)
         ctx = "\n\n".join(parts)
         if len(ctx) > MEMORY_INJECT_MAX:
             ctx = ctx[:MEMORY_INJECT_MAX]

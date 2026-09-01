@@ -1,0 +1,10 @@
+[Unit]
+Description=Liza daily memory digest timer (23:59)
+
+[Timer]
+OnCalendar=*-*-* 23:59:00
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

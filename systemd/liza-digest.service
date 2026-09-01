@@ -1,0 +1,14 @@
+[Unit]
+Description=Liza daily memory digest (chronicles)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/liza-mock
+Environment=MEMORY_DB=/opt/liza_data/context.db
+Environment=CHRONICLES_DIR=/opt/liza_data/chronicles
+ExecStart=/opt/liza-mock/venv/bin/python /opt/liza-mock/daily_memory_digest.py
+# не роняем таймер при ошибке
+SuccessExitStatus=0 1

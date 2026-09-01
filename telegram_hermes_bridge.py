@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Telegram-мост -> Hermes CLI -> Mock OpenAI RPA (с памятью Лизы).
 
-Лёгкий aiogram-демон: входящее сообщение уходит в `hermes -z "..."`,
-ответ возвращается в чат, разбитый на блоки до 4000 символов.
-Память Лизы хранится в /opt/liza_data/context.db (тот же файл, что у бота):
-  - /memory [n] — показать последние n запомненных фактов ([MEM_UPDATE]);
+Лёгкий aiogram-демон: текст уходит в `hermes -z "..."`, голосовые
+транскрибируются (Groq Whisper), ответ возвращается блоками до 4000 символов.
+Память Лизы в /opt/liza_data/context.db (тот же файл, что у бота):
+  - /memory [n] — последние n запомненных фактов ([MEM_UPDATE]);
   - диалог и MEM_UPDATE сохраняет mock_openai_rpa.py.
 """
 from __future__ import annotations
@@ -15,7 +15,8 @@ import os
 import shlex
 import sqlite3
 import subprocess
-from datetime import datetime, timezone
+import tempfile
+from typing import Any
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -32,6 +33,8 @@ HERMES_BIN = os.environ.get(
 )
 MAX_BLOCK = int(os.environ.get("MAX_BLOCK", "4000"))
 MEMORY_DB = os.environ.get("MOCK_MEMORY_DB", "/opt/liza_data/context.db")
+GROQ_API_KEYS = [k.strip() for k in os.environ.get("GROQ_API_KEYS", "").split(",") if k.strip()]
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "whisper-large-v3")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -61,6 +64,33 @@ def _ask_hermes(query: str, timeout: int = 300) -> str:
     if not out:
         raise RuntimeError(f"hermes вернул пустой ответ (rc={proc.returncode})")
     return out
+
+
+def _transcribe_ogg(data: bytes) -> str:
+    """Транскрибация голосового (.ogg) через Groq Whisper (whisper-large-v3)."""
+    if not GROQ_API_KEYS:
+        raise RuntimeError("GROQ_API_KEYS не заданы — голосовые недоступны")
+    from groq import Groq
+
+    client = Groq(api_key=GROQ_API_KEYS[0])
+    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+        tmp.write(data)
+        path = tmp.name
+    try:
+        with open(path, "rb") as f:
+            result = client.audio.transcriptions.create(
+                model=GROQ_MODEL,
+                file=(path, f, "audio/ogg"),
+            )
+        text = (result.text or "").strip()
+        if not text:
+            raise RuntimeError("Whisper вернул пустой текст")
+        return text
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def _memory_text(n: int = 10) -> str:
@@ -109,6 +139,32 @@ async def cmd_memory(message: Message) -> None:
             n = 10
     n = max(1, min(n, 50))
     await message.answer(_memory_text(n), parse_mode="Markdown")
+
+
+@dp.message(F.voice)
+async def on_voice(message: Message) -> None:
+    if message.from_user is None or message.from_user.id not in ALLOWED:
+        return
+    status = await message.answer("🎧 Слушаю…")
+    try:
+        data = await bot.download(message.voice.file_id)
+        raw = data.read() if hasattr(data, "read") else data
+        await status.edit_text("🔊 Транскрибирую…")
+        text = await asyncio.to_thread(_transcribe_ogg, raw)
+        await status.edit_text(f"🗣 *Вы (голос):* {text}\n\n_Отправляю Лизе…_", parse_mode="Markdown")
+        reply = await asyncio.to_thread(_ask_hermes, text)
+        try:
+            await status.delete()
+        except Exception:  # noqa: BLE001
+            pass
+        for block in _chunks(reply):
+            await message.answer(block)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("voice error")
+        try:
+            await status.edit_text(f"❌ Ошибка обработки голосового: {exc}")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @dp.message(F.text)
