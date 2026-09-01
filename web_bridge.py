@@ -45,11 +45,13 @@ def build_starter_prompt(context: str = "") -> str:
         "Подтверди готовность!"
     )
     if context:
+        # НЕ упоминаем Google Drive/ссылки — Gemini не открывает ссылки и отказывает.
+        # Просто встраиваем текст вики как контекст для запоминания.
         return (
-            f"Прочитай и запомни мои вики-файлы с Google Drive (папка Liza_Brain, "
-            f"{GEMINI_DRIVE_FOLDER}):\n\n{context}\n\n{base}"
+            f"Это мой личный контекст (память Лизы), запомни его полностью и "
+            f"следуй ему во всех дальнейших ответах:\n\n{context}\n\n{base}"
         )
-    return f"{base}\n\n(Мои вики-файлы недоступны — работай по общей памяти.)"
+    return base
 
 STARTER_PROMPT = build_starter_prompt()
 
