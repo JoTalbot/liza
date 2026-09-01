@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
+import re
 import shlex
 import sqlite3
 import subprocess
@@ -64,6 +66,43 @@ def _ask_hermes(query: str, timeout: int = 300) -> str:
     if not out:
         raise RuntimeError(f"hermes вернул пустой ответ (rc={proc.returncode})")
     return out
+
+
+# --- многошаговые задачи: mock помечает шаги [LIZA_STEP_n] и финал [LIZA_ANSWER]
+_STEP_RE = re.compile(
+    r"\[LIZA_STEP_\d+\]\s*\$ (.*?)\n(.*?)(?=\n\[LIZA_STEP_|\n\[LIZA_ANSWER\]|\Z)",
+    re.DOTALL,
+)
+_ANSWER_RE = re.compile(r"\[LIZA_ANSWER\]\s*(.*)\Z", re.DOTALL)
+_STEP_OUT_MAX = 3500  # лимит вывода шага в одном сообщении Telegram
+
+
+def _split_steps(reply: str) -> tuple[list[tuple[str, str]], str]:
+    """Разбивает ответ с маркерами шагов на (steps, финальный ответ).
+
+    steps: список (команда, вывод). Если маркеров нет — (пусто, исходный ответ).
+    """
+    if "[LIZA_STEP_" not in reply:
+        return [], reply
+    steps: list[tuple[str, str]] = []
+    for m in _STEP_RE.finditer(reply):
+        cmd = m.group(1).strip()
+        out = m.group(2).strip()
+        if cmd or out:
+            steps.append((cmd, out))
+    am = _ANSWER_RE.search(reply)
+    final = am.group(1).strip() if am else ""
+    if not final:
+        final = reply.split("[LIZA_ANSWER]")[-1].strip()
+    return steps, final
+
+
+def _step_md(cmd: str, out: str) -> str:
+    """Одно сообщение шага: команда + вывод в <pre> (HTML, с экранированием)."""
+    esc_cmd = html.escape(cmd, quote=False)
+    body = out if len(out) <= _STEP_OUT_MAX else out[:_STEP_OUT_MAX] + "\n…(вывод обрезан)"
+    esc_body = html.escape(body, quote=False)
+    return f"⚙️ Шаг:\n<code>$ {esc_cmd}</code>\n<pre>{esc_body}</pre>"
 
 
 def _transcribe_ogg(data: bytes) -> str:
@@ -157,8 +196,15 @@ async def on_voice(message: Message) -> None:
             await status.delete()
         except Exception:  # noqa: BLE001
             pass
-        for block in _chunks(reply):
-            await message.answer(block)
+        steps, final = _split_steps(reply)
+        for cmd, out in steps:
+            try:
+                await message.answer(_step_md(cmd, out), parse_mode="HTML")
+            except Exception:  # noqa: BLE001
+                log.warning("не удалось показать шаг: %s", cmd[:60])
+        if final:
+            for block in _chunks(final):
+                await message.answer(block)
     except Exception as exc:  # noqa: BLE001
         log.exception("voice error")
         try:
@@ -178,8 +224,15 @@ async def on_text(message: Message) -> None:
             await status.delete()
         except Exception:  # noqa: BLE001
             pass
-        for block in _chunks(reply):
-            await message.answer(block)
+        steps, final = _split_steps(reply)
+        for cmd, out in steps:
+            try:
+                await message.answer(_step_md(cmd, out), parse_mode="HTML")
+            except Exception:  # noqa: BLE001
+                log.warning("не удалось показать шаг: %s", cmd[:60])
+        if final:
+            for block in _chunks(final):
+                await message.answer(block)
     except Exception as exc:  # noqa: BLE001
         log.exception("hermes error")
         try:

@@ -88,6 +88,9 @@ RECENT_MEM_UPDATES = int(os.environ.get("MOCK_RECENT_MEM_UPDATES", "12"))
 SHELL_TIMEOUT = int(os.environ.get("MOCK_SHELL_TIMEOUT", "30"))
 SHELL_MAX_OUTPUT = int(os.environ.get("MOCK_SHELL_MAX_OUTPUT", "6000"))
 MAX_AGENT_TURNS = int(os.environ.get("MOCK_AGENT_TURNS", "3"))
+# персистентная рабочая директория shell-инструментов (cd сохраняется между запросами)
+SHELL_CWD = os.environ.get("MOCK_SHELL_CWD", "/root")
+_cwd_lock = threading.Lock()
 # безопасные команды для авто-детекта (все остальные — через явный префикс "!")
 SHELL_ALLOWED = {
     "ls", "pwd", "cat", "head", "tail", "wc", "grep", "find", "tree", "du",
@@ -96,6 +99,7 @@ SHELL_ALLOWED = {
     "mount", "lsblk", "lscpu", "nproc", "hostname", "date", "history",
     "hermes", "python3", "python", "pip", "pip3", "git", "curl", "wget",
     "lsusb", "lspci", "dmidecode", "vcgencmd", "df", "uname", "env", "printenv",
+    "cd", "mkdir", "touch", "chmod", "chown",
 }
 CMD_RE = re.compile(r"\[CMD:\s*(.*?)\]", re.IGNORECASE | re.DOTALL)
 
@@ -342,24 +346,49 @@ def _estimate_tokens(text: str) -> int:
 
 # ---------------------------------------------------------------- shell-инструменты Лизы
 def _run_shell(cmd: str) -> str:
-    """Выполняет команду на сервере (от имени ubuntu), возвращает вывод.
+    """Выполняет команду на сервере (от root), возвращает вывод.
 
-    Безопасные ограничения: таймаут, лимит длины вывода; sudo запускается
-    в non-interactive режиме (без запроса пароля).
+    Рабочая директория персистентная: `cd /путь` меняет её для последующих
+    команд (сохраняется между запросами). Ограничения: таймаут, лимит длины
+    вывода; sudo запускается в non-interactive режиме.
     """
+    global SHELL_CWD
     cmd = (cmd or "").strip().strip("`").strip()
     if not cmd:
         return "(пустая команда)"
+
+    # cd — меняем персистентную рабочую директорию
+    if cmd == "cd" or cmd.startswith("cd "):
+        target = cmd[3:].strip() if cmd != "cd" else ""
+        with _cwd_lock:
+            cur = SHELL_CWD
+            if not target:
+                new = os.path.expanduser("~")
+            else:
+                target = target.strip().strip('"').strip("'")
+                if target.startswith("~"):
+                    new = os.path.expanduser(target)
+                elif target.startswith("/"):
+                    new = target
+                else:
+                    new = os.path.abspath(os.path.join(cur, target))
+            if os.path.isdir(new):
+                SHELL_CWD = new
+                return f"(рабочая директория изменена: {SHELL_CWD})"
+            return f"(нет такой директории: {new})"
+
     if cmd.startswith("sudo "):
         cmd = "sudo -n " + cmd[5:]
     env = dict(os.environ)
     # дополняем PATH, чтобы находились venv-утилиты (hermes и т.п.)
     venv_bin = os.path.expanduser("~/hermes-venv/bin")
     env["PATH"] = f"{venv_bin}:{env.get('PATH', '')}"
+    with _cwd_lock:
+        cwd = SHELL_CWD
     try:
         proc = subprocess.run(
             cmd, shell=True, capture_output=True, text=True,
-            timeout=SHELL_TIMEOUT, env=env,
+            timeout=SHELL_TIMEOUT, env=env, cwd=cwd,
         )
         out = (proc.stdout or "").strip()
         err = (proc.stderr or "").strip()
@@ -401,6 +430,22 @@ def _extract_shell_command(text: str) -> str | None:
     if t.startswith("!"):  # принудительный режим
         return t[1:].strip()
     return _looks_like_command(t)
+
+
+def _attach_steps(final_text: str, steps: list[tuple[str, str]]) -> str:
+    """Добавляет к финальному ответу маркеры шагов для Telegram-моста.
+
+    Формат: [LIZA_STEP_n] $ команда\\nвывод ... [LIZA_ANSWER] финальный ответ.
+    Мост разбирает их и показывает каждый шаг отдельным сообщением.
+    """
+    if not steps:
+        return final_text
+    parts: list[str] = []
+    for i, (cmd, out) in enumerate(steps, 1):
+        parts.append(f"[LIZA_STEP_{i}] $ {cmd}\n{out}")
+    parts.append("[LIZA_ANSWER]")
+    parts.append(final_text)
+    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------- RPA-мост
@@ -571,12 +616,18 @@ class GemBridge:
         raise asyncio.TimeoutError
 
     def _store_from_reply(self, raw: str) -> None:
-        """Сохраняет в память: [MEM_UPDATE] из ответа + сам ответ в диалог."""
+        """Сохраняет в память: [MEM_UPDATE] из ответа + сам ответ в диалог.
+
+        Промежуточные ответы с [CMD:...] (технические шаги) в диалог не
+        сохраняем — только финальные ответы пользователю и MEM_UPDATE.
+        """
         try:
             for m in MEM_UPDATE_RE.finditer(raw or ""):
                 p = m.group(1).strip()
                 if p:
                     memory.add_memory_update(p)
+            if CMD_RE.search(raw or ""):
+                return  # тех.шаг — в диалог не пишем
             cleaned = _clean_answer(raw or "")
             if cleaned:
                 memory.add_message("assistant", cleaned)
@@ -659,10 +710,13 @@ def _build_messages(payload: dict) -> str:
         "оборудования, не упоминай файлы, протоколы, L0-L3 и Wiki-документы. "
         "Если узнаёшь что-то важное о Косте или его делах — можешь подтвердить "
         "запоминание тегом [MEM_UPDATE: суть] в конце ответа.\n"
-        "У тебя есть доступ к серверу: чтобы посмотреть статус, файлы, логи, "
-        "процессы или выполнить команду, оберни её в [CMD: команда] — вывод "
-        "придёт следующим сообщением, и ты дашь ответ по нему. В финальном "
-        "ответе тег [CMD] не оставляй.\n\n"
+        "У тебя есть доступ к серверу (от root): чтобы посмотреть статус, "
+        "файлы, логи, процессы или выполнить команду, оберни её в "
+        "[CMD: команда] — вывод придёт следующим сообщением, и ты дашь ответ "
+        "по нему. Рабочая директория персистентная: `cd /путь` меняет её для "
+        "последующих команд. Каждый запущенный шаг пользователь видит, поэтому "
+        "в финальном ответе не повторяй весь вывод — дай краткую суть. В "
+        "финальном ответе тег [CMD] не оставляй.\n\n"
     )
 
     # ПАМЯТЬ (самое важное): вики + запомненные факты + недавний диалог
@@ -761,10 +815,12 @@ async def chat_completions(request: Request) -> Any:
         pass
 
     # ПРЯМОЙ РЕЖИМ: пользователь прислал команду (или "!команда") — выполняем сразу
+    steps: list[tuple[str, str]] = []
     shell_cmd = _extract_shell_command(last_user)
     if shell_cmd:
         log.info("Shell-инструмент (прямой): %s", shell_cmd)
         result = _run_shell(shell_cmd)
+        steps.append((shell_cmd, result))
         prompt += (
             "\n\n[Инструмент] Пользователь прислал команду и ждёт её результат:\n"
             f"$ {shell_cmd}\n{result}\n\n"
@@ -781,7 +837,11 @@ async def chat_completions(request: Request) -> Any:
             if not cmds:
                 break
             log.info("Shell-инструмент (агент, ход %d): %s", turn + 1, cmds)
-            blocks = [f"$ {c}\n{_run_shell(c)}" for c in cmds]
+            blocks = []
+            for c in cmds:
+                out = _run_shell(c)
+                steps.append((c, out))
+                blocks.append(f"$ {c}\n{out}")
             agent_prompt = (
                 "Ты запросила команды на сервере. Результаты:\n\n"
                 + "\n\n".join(blocks)
@@ -797,6 +857,9 @@ async def chat_completions(request: Request) -> Any:
             status_code=502,
             content={"error": {"message": f"RPA generation failed: {exc}", "type": "server_error"}},
         )
+
+    # добавляем шаги в ответ — Telegram-мост покажет их отдельными сообщениями
+    content = _attach_steps(content, steps)
 
     if stream:
         return _stream_response(model, content)
