@@ -272,7 +272,7 @@ async def _reply_to(message: Message, status: Message | None, user_input: str, n
         if status:
             await status.edit_text("🌐 Связываюсь с Gemini…")
         else:
-            await message.answer_chat_action(action=ChatAction.TYPING)
+            await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
         reply = await bridge.send_prompt_to_chat(user_input)
         if not reply:
             raise RuntimeError("Пустой ответ от Gemini")
