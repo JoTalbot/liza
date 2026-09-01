@@ -96,8 +96,51 @@ jobs:
             echo '== docker ps =='
             sudo docker ps --filter name=liza --format 'table {{.Names}}\t{{.Status}}'
 
-      # --- Деплой бота (пересоздаём ТОЛЬКО liza-bot) ---
+      # --- Hermes-мост (mock OpenAI API + Telegram-Hermes bridge) ---
+      # Устанавливает mock_openai_rpa.py + telegram_hermes_bridge.py как
+      # systemd-сервисы (автозапуск). Токен бота берётся из того же .env.
+      - name: Deploy Hermes mock + Telegram bridge (systemd)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ vars.SERVER_HOST }}
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          timeout: 900s
+          script: |
+            set -e
+            sudo mkdir -p /opt/liza-mock
+            sudo cp /home/ubuntu/liza/mock_openai_rpa.py /home/ubuntu/liza/telegram_hermes_bridge.py /opt/liza-mock/ 2>/dev/null || true
+            sudo chown -R ubuntu:ubuntu /opt/liza-mock
+            cd /opt/liza-mock
+            if [ ! -d venv ]; then
+              python3 -m venv venv
+            fi
+            ./venv/bin/pip install -q --upgrade pip
+            ./venv/bin/pip install -q fastapi "uvicorn[standard]" playwright "aiogram>=3.7,<4" || true
+            # systemd-юниты
+            sudo cp /home/ubuntu/liza/systemd/liza-mock.service /etc/systemd/system/ 2>/dev/null || true
+            sudo cp /home/ubuntu/liza/systemd/telegram-hermes.service /etc/systemd/system/ 2>/dev/null || true
+            # .telegram.env из .env (токен того же бота)
+            sudo bash -c 'grep -E "^(BOT_TOKEN|ALLOWED_USER_ID)=" /home/ubuntu/liza/.env > /opt/liza-mock/.telegram.env; chmod 600 /opt/liza-mock/.telegram.env'
+            sudo systemctl daemon-reload
+            sudo systemctl enable --now liza-mock 2>/dev/null || true
+            sleep 2
+            echo '== mock health =='
+            curl -s -m 10 http://127.0.0.1:8000/healthz || echo 'mock не готов'
+            echo ''
+            echo '== docker ps =='
+            sudo docker ps --filter name=liza --format 'table {{.Names}}\t{{.Status}}'
+            echo '== CDP check =='
+            curl -s -m 8 http://localhost:9222/json/version | head -c 120 || echo 'CDP ещё не готов'
+            echo ''
+            echo '== noVNC check =='
+            curl -s -m 8 -o /dev/null -w 'noVNC HTTP %{http_code}\n' http://localhost:6080/vnc.html || echo 'noVNC ещё не готов'
+      # ВАЖНО: сейчас Telegram-бот работает через Hermes-мост
+      # (telegram_hermes_bridge.py + liza-mock). Старый liza-bot (прямой
+      # Gemini-канал) отключён. Чтобы вернуть его, поставь переменную
+      # репозитория DEPLOY_LEGACY_BOT=1.
       - name: Deploy bot (without touching browser)
+        if: vars.DEPLOY_LEGACY_BOT == '1'
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ vars.SERVER_HOST }}
@@ -133,8 +176,3 @@ jobs:
             echo ''
             echo '== noVNC check =='
             curl -s -m 8 -o /dev/null -w 'noVNC HTTP %{http_code}\n' http://localhost:6080/vnc.html || echo 'noVNC ещё не готов'
-            echo ''
-            echo '== Google login check =='
-            curl -s -m 8 http://localhost:9222/json/version >/dev/null 2>&1 \
-              && echo 'Откройте http://'"${{ vars.SERVER_HOST }}"':6080/vnc.html и войдите в Google (если бот говорит "нужен вход")' \
-              || true

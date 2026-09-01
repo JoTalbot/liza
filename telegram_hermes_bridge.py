@@ -22,7 +22,10 @@ log = logging.getLogger("telegram-hermes")
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 ALLOWED = {int(x) for x in os.environ.get("ALLOWED_USER_ID", "").split(",") if x.strip()}
-HERMES_BIN = os.environ.get("HERMES_BIN", "hermes")
+HERMES_BIN = os.environ.get(
+    "HERMES_BIN",
+    os.path.expanduser("~/hermes-venv/bin/hermes"),  # путь по умолчанию на Oracle VPS
+)
 MAX_BLOCK = int(os.environ.get("MAX_BLOCK", "4000"))
 
 bot = Bot(token=BOT_TOKEN)
@@ -45,7 +48,7 @@ def _chunks(text: str, size: int = MAX_BLOCK) -> list[str]:
 
 
 def _ask_hermes(query: str, timeout: int = 180) -> str:
-    cmd = f"{shlex.quote(HERMES_BIN)} run --query {shlex.quote(query)}"
+    cmd = f"{shlex.quote(HERMES_BIN)} -z {shlex.quote(query)}"
     proc = subprocess.run(
         cmd, shell=True, capture_output=True, text=True, timeout=timeout,
     )

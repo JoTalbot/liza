@@ -141,3 +141,19 @@ docker restart liza-browser   # если Chromium завис
 `GOOGLE_DOC_ID` (Google Docs sync), `DAILY_DIGEST_TIME`.
 
 Переменная репозитория: `SERVER_HOST` (IP сервера).
+
+## Telegram через Hermes (текущая схема)
+
+Сейчас Telegram-бот работает через **Hermes-мост** (без прямого Gemini-канала):
+
+```
+Telegram -> telegram_hermes_bridge.py (aiogram, systemd)
+         -> hermes CLI (-z) -> mock_openai_rpa.py (FastAPI :8000)
+         -> Playwright CDP -> Gemini (браузер liza-browser)
+```
+
+- Старый контейнер `liza-bot` отключён (переменная репо `DEPLOY_LEGACY_BOT=0`).
+- systemd-сервисы: `liza-mock` (OpenAI API) и `telegram-hermes` (Telegram-мост).
+- `.telegram.env` (токен + allowed) создаётся из `.env` при деплое.
+- Чтобы вернуть старый прямой канал: поставь `DEPLOY_LEGACY_BOT=1` в переменных
+  репозитория и перезапусти workflow (не забудь остановить telegram-hermes).
