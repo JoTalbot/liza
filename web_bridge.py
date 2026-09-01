@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 from playwright.async_api import async_playwright
 
 import config
+import google_sync  # noqa: F401 — инициализирует memory_manager (пайплайн памяти)
 
 log = logging.getLogger(__name__)
 
@@ -615,10 +616,11 @@ class WebBridge:
                 raise RuntimeError("Нет входа в Google — откройте http://<IP>:6080/vnc.html и войдите в аккаунт")
 
             reply = await self._submit_and_extract(text)
-            reply, updates = self._parse_memory_updates(reply)
-            self.memory_updates = updates
-            if updates:
-                log.info("MEM_UPDATE: извлечено %d обновлений памяти", len(updates))
+            # пайплайн памяти: [MEM_UPDATE: ...] -> SQLite + паспорта проектов
+            reply, payload = await google_sync.memory_manager.process_text_for_memory(reply)
+            self.memory_updates = [payload] if payload else []
+            if payload:
+                log.info("MEM_UPDATE: извлечено 1 обновление памяти")
             return reply
 
     def _emit_stage(self, stage: str) -> None:

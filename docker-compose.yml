@@ -25,6 +25,9 @@ services:
       - .env
     environment:
       - CDP_URL=http://browser:9222
+      - DB_PATH=/data/context.db
+      - CHRONICLES_DIR=/data/chronicles
+      - PROJECTS_DIR=/data/projects
     volumes:
       - /opt/liza_data:/data
     depends_on:

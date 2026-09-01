@@ -30,7 +30,9 @@ web_bridge.py                 — Playwright CDP, выделенный чат Ge
 main.py                       — Telegram: текст/голос → Web Bridge (fallback Groq),
                                 + планировщик ежедневного дайджеста
 ai_brain.py                   — Groq chat (fallback)
-google_sync.py                — реалтайм-синк в Google Doc (graceful-fail)
+google_sync.py                — реалтайм-синк в Google Doc (graceful-fail) +
+                                MemorySyncManager: [MEM_UPDATE] -> память,
+                                автопаспорта проектов (PRJ_*.md) в /data/projects
 transcriber.py                — .ogg → текст (Groq Whisper)
 database.py                   — SQLite: notes(id, timestamp, type, content)
 daily_digest.py               — ежедневные итоги дня (23:59) в

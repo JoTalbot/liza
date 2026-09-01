@@ -52,3 +52,6 @@ DAILY_DIGEST_ENABLED = os.environ.get("DAILY_DIGEST_ENABLED", "1").strip().lower
 )
 DAILY_DIGEST_TIME = os.environ.get("DAILY_DIGEST_TIME", "23:59").strip() or "23:59"
 CHRONICLES_DIR = os.environ.get("CHRONICLES_DIR", os.path.join(DATA_DIR, "chronicles"))
+
+# --- Автопаспорта проектов (MemorySyncManager, тег NEW_PROJECT:) ---
+PROJECTS_DIR = os.environ.get("PROJECTS_DIR", os.path.join(DATA_DIR, "projects"))

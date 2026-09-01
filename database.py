@@ -36,16 +36,49 @@ class Database:
             )
             """
         )
+        # схема из ТЗ: conversations + memory_updates (зеркала/регистр памяти)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversations (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME,
+                user_id   INTEGER,
+                role      TEXT,
+                content   TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_updates (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME,
+                raw_tag   TEXT,
+                synced    BOOLEAN DEFAULT 0
+            )
+            """
+        )
         conn.commit()
 
-    def add_note(self, type_: str, content: str) -> int:
-        """Сохраняет запись (type: 'text' | 'voice') и возвращает её id."""
+    def add_note(self, type_: str, content: str, user_id: int = 0) -> int:
+        """Сохраняет запись (type: 'text' | 'voice' | 'assistant' | 'MEM_UPDATE')
+        и возвращает её id. Дублируется в conversations (схема ТЗ)."""
         ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
         cur = self._conn().execute(
             "INSERT INTO notes (timestamp, type, content) VALUES (?, ?, ?)",
             (ts, type_, content),
         )
         self._conn().commit()
+        if type_ in ("text", "voice", "assistant"):
+            role = "assistant" if type_ == "assistant" else "user"
+            try:
+                self._conn().execute(
+                    "INSERT INTO conversations (timestamp, user_id, role, content) VALUES (?, ?, ?, ?)",
+                    (ts, user_id, role, content),
+                )
+                self._conn().commit()
+            except Exception:  # noqa: BLE001 — зеркало не критично
+                pass
         return cur.lastrowid
 
     def last_notes(self, n: int = 10) -> list[sqlite3.Row]:

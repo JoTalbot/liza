@@ -11,7 +11,20 @@ rm -f /config/profile/SingletonLock \
       /config/profile/SingletonSocket
 
 echo "=== Xvfb (${RESOLUTION}) ==="
+# stale lock /tmp/.X0-lock после неаккуратного завершения (kill контейнера /
+# остановка VM) блокирует старт Xvfb и роняет весь X-стек (см. «Missing X server»)
+rm -f /tmp/.X0-lock
 Xvfb :0 -screen 0 ${RESOLUTION}x24 -ac +extension GLX +render -noreset &
+XVFB_PID=$!
+# ждём, пока X-сервер поднимется (до 10с)
+for _i in $(seq 1 20); do
+  [ -S /tmp/.X11-unix/X0 ] && break
+  kill -0 "$XVFB_PID" 2>/dev/null || break
+  sleep 0.5
+done
+if [ ! -S /tmp/.X11-unix/X0 ]; then
+  echo "Xvfb не поднялся (смотри /tmp/xvfb.log)" >&2
+fi
 
 echo "=== fluxbox ==="
 fluxbox &
@@ -73,9 +86,16 @@ trap graceful_shutdown TERM INT
 
 run_chromium
 
-# Watchdog: если Chromium падает — поднимаем заново
+# Watchdog: если Chromium/Xvfb падают — поднимаем заново
 while true; do
   sleep 20
+  if ! pgrep -x Xvfb > /dev/null; then
+    echo "$(date -u +%FT%TZ) Xvfb упал — перезапускаю" >> /var/log/liza-browser.log
+    rm -f /tmp/.X0-lock
+    Xvfb :0 -screen 0 ${RESOLUTION}x24 -ac +extension GLX +render -noreset &
+    XVFB_PID=$!
+    sleep 2
+  fi
   if ! pgrep -x chromium > /dev/null; then
     echo "$(date -u +%FT%TZ) Chromium упал — перезапускаю" >> /var/log/liza-browser.log
     run_chromium

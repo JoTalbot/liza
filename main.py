@@ -384,7 +384,7 @@ async def _reply_to(message: Message, status: Message | None, user_input: str, n
             reply = f"😵 Упс, всё сломалось: {exc2}"
             source = "none"
 
-    db.add_note("assistant", reply)
+    db.add_note("assistant", reply, message.from_user.id if message.from_user else 0)
     _sync("assistant", reply)
 
     # «Ответ получен» → отправляем ответ → удаляем статус
@@ -399,7 +399,8 @@ async def _reply_to(message: Message, status: Message | None, user_input: str, n
 async def on_text(message: Message) -> None:
     if not is_allowed(message):
         return
-    note_id = db.add_note("text", message.text)
+    uid = message.from_user.id if message.from_user else 0
+    note_id = db.add_note("text", message.text, uid)
     _sync("text", message.text)
     log.info("Text note #%d from %s", note_id, message.from_user.id)
     await _reply_to(message, None, message.text, note_id)
@@ -422,7 +423,7 @@ async def on_voice(message: Message) -> None:
             await status.edit_text("🤷 Не удалось распознать речь — попробуйте ещё раз.")
             return
 
-        note_id = db.add_note("voice", text)
+        note_id = db.add_note("voice", text, message.from_user.id if message.from_user else 0)
         _sync("voice", text)
         log.info("Voice note #%d from %s", note_id, message.from_user.id)
         await _reply_to(message, status, text, note_id)
