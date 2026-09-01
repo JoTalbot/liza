@@ -67,6 +67,14 @@ MODEL_PICKER_SELECTORS = [
     "button[data-test-id='model-selector']",
 ]
 
+MODEL_LABEL_SELECTORS = [
+    "button[aria-label*='model' i]",
+    "button[aria-label*='Model' i]",
+    "div[aria-label*='model' i]",
+    "[data-test-id='model-selector']",
+    "button[data-test-id='model-picker-button']",
+]
+
 MODEL_OPTION_SELECTORS = [
     "div[role='option']",
     "button[role='option']",
@@ -261,6 +269,105 @@ class WebBridge:
                 continue
         log.warning("Кнопка «Новый чат» не найдена — работаю с текущим чатом")
         return False
+
+    # ---------- смена чата ----------
+    async def new_dedicated_chat(self) -> str:
+        """Создаёт НОВЫЙ выделенный чат Gemini и сохраняет его URL.
+        Дальнейшие сообщения бота пойдут в этот новый чат."""
+        async with self._lock:
+            await self.ensure_ready()
+            try:
+                await self._page.goto(GEMINI_APP_URL, wait_until="domcontentloaded", timeout=60000)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("goto %s: %s", GEMINI_APP_URL, exc)
+            await asyncio.sleep(3)
+            if self._is_login_page():
+                raise RuntimeError("Требуется вход в Google (noVNC)")
+            await self._try_click_new_chat()
+            await asyncio.sleep(2)
+            await self._try_enable_extended_thinking()
+            url = self._page.url or GEMINI_APP_URL
+            self.chat_url = url
+            self._save_session(url, self.current_model)
+            log.info("Новый выделенный чат: %s (model=%s)", url, self.current_model or "?")
+            return url
+
+    # ---------- статус модели ----------
+    async def get_model_status(self) -> str:
+        """Best-effort: определяет текущую модель и режим Extended Thinking из UI."""
+        parts = []
+        try:
+            model = await self._detect_model_name()
+            if model:
+                parts.append(f"Модель: **{model}**")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("detect model: %s", exc)
+        try:
+            thinking = await self._detect_thinking_mode()
+            if thinking:
+                parts.append(thinking)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("detect thinking: %s", exc)
+        if not parts:
+            return "Модель: не определена (настройте вручную в noVNC)"
+        return "; ".join(parts)
+
+    async def _detect_model_name(self) -> str:
+        """Читает название активной модели: сначала кнопка-лейбл, потом пикер."""
+        for sel in MODEL_LABEL_SELECTORS:
+            try:
+                el = self._page.locator(sel).first
+                if await el.is_visible():
+                    txt = (await el.inner_text() or "").strip().splitlines()
+                    if txt:
+                        name = txt[0].strip()
+                        if name and len(name) > 1:
+                            return name[:60]
+            except Exception:  # noqa: BLE001
+                continue
+        # fallback: открыть пикер и прочитать выбранную (aria-selected) опцию
+        try:
+            await self._open_model_picker()
+            await asyncio.sleep(1.2)
+            for sel in MODEL_OPTION_SELECTORS:
+                try:
+                    loc = self._page.locator(sel)
+                    n = await loc.count()
+                    for i in range(n):
+                        selected = await loc.nth(i).get_attribute("aria-selected")
+                        if selected == "true":
+                            txt = (await loc.nth(i).inner_text() or "").strip().replace("\n", " ")
+                            await self._page.keyboard.press("Escape")
+                            return txt[:60]
+                except Exception:  # noqa: BLE001
+                    continue
+            await self._page.keyboard.press("Escape")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("не удалось прочитать модель из пикера: %s", exc)
+        return ""
+
+    async def _detect_thinking_mode(self) -> str:
+        """Проверяет, включён ли Extended/Deep Thinking (по тумблеру или тексту)."""
+        for sel in THINKING_TOGGLE_SELECTORS:
+            try:
+                el = self._page.locator(sel).first
+                if await el.is_visible():
+                    pressed = await el.get_attribute("aria-pressed")
+                    checked = await el.get_attribute("aria-checked")
+                    if pressed == "true" or checked == "true":
+                        return "Extended Thinking: **ВКЛ**"
+                    if pressed == "false" or checked == "false":
+                        return "Extended Thinking: **ВЫКЛ**"
+            except Exception:  # noqa: BLE001
+                continue
+        try:
+            body = await self._page.locator("body").inner_text()
+            low = body.lower()
+            if "extended thinking" in low or "deep think" in low:
+                return "Extended Thinking: вероятно ВКЛ"
+        except Exception:  # noqa: BLE001
+            pass
+        return ""
 
     async def _try_enable_extended_thinking(self) -> None:
         """Best-effort: включает Extended/Deep Thinking и выбирает продвинутую модель."""

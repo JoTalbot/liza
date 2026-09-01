@@ -5,7 +5,7 @@ import logging
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ChatAction
 from aiogram.filters import Command, CommandStart
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import config
 import google_sync
@@ -34,6 +34,10 @@ def is_allowed(message: Message) -> bool:
     return message.from_user is not None and message.from_user.id in ALLOWED
 
 
+def is_allowed_uid(uid: int | None) -> bool:
+    return uid is not None and uid in ALLOWED
+
+
 def _clip(text: str) -> str:
     return text if len(text) <= MAX_REPLY else text[: MAX_REPLY - 3] + "..."
 
@@ -41,6 +45,45 @@ def _clip(text: str) -> str:
 def _sync(kind: str, content: str) -> None:
     """Фоновая синхронизация в Google Docs (не блокирует ответ бота)."""
     asyncio.create_task(google_sync.append_entry(kind, content))
+
+
+# ---------- статус и кнопки ----------
+def _status_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🆕 Новый чат", callback_data="liza:new_chat"),
+                InlineKeyboardButton(text="🔄 Обновить статус", callback_data="liza:refresh"),
+            ]
+        ]
+    )
+
+
+def _current_chat_url() -> str:
+    if bridge.chat_url:
+        return bridge.chat_url
+    try:
+        return bridge._load_session().get("url") or "не создан"
+    except Exception:  # noqa: BLE001
+        return "не создан"
+
+
+async def _status_text() -> str:
+    cdp = "✅ подключено" if bridge._connected else "⏳ не подключено"
+    chat = _current_chat_url()
+    try:
+        model = await bridge.get_model_status()
+    except Exception as exc:  # noqa: BLE001
+        model = f"Модель: ошибка определения ({exc})"
+    lines = [
+        "🔧 **Статус:**",
+        f"• CDP: {cdp}",
+        f"• Чат: `{chat}`",
+        f"• {model}",
+        f"• Память: {db.count_notes()} записей",
+        f"• Google Docs синк: {'✅' if google_sync.is_configured() else '—'}",
+    ]
+    return "\n".join(lines)
 
 
 @router.message(CommandStart())
@@ -65,15 +108,59 @@ async def cmd_status(message: Message) -> None:
     if not is_allowed(message):
         await message.answer("⛔ Доступ запрещён.")
         return
-    lines = [
-        "🔧 **Статус:**",
-        f"• CDP: {'✅ подключено' if bridge._connected else '⏳ не подключено'}",
-        f"• Чат Gemini: {bridge.chat_url or 'не создан'}",
-        f"• Модель: {bridge.current_model or 'не выбрана'}",
-        f"• Память: {db.count_notes()} записей",
-        f"• Google Docs синк: {'✅' if google_sync.is_configured() else '—'}",
-    ]
-    await message.answer("\n".join(lines), parse_mode="Markdown")
+    text = await _status_text()
+    await message.answer(text, parse_mode="Markdown", reply_markup=_status_kb())
+
+
+@router.message(Command("newchat"))
+async def cmd_new_chat(message: Message) -> None:
+    if not is_allowed(message):
+        await message.answer("⛔ Доступ запрещён.")
+        return
+    status = await message.answer("🆕 Создаю новый выделенный чат…")
+    try:
+        url = await bridge.new_dedicated_chat()
+        await status.edit_text(
+            f"🆕 Новый выделенный чат создан:\n`{url}`\n\n"
+            "Следующие сообщения пойдут уже в него.",
+            parse_mode="Markdown",
+            reply_markup=_status_kb(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.exception("new chat failed")
+        await status.edit_text(f"❌ Не удалось создать чат: {exc}", reply_markup=_status_kb())
+
+
+@router.callback_query(F.data == "liza:new_chat")
+async def cb_new_chat(call: CallbackQuery) -> None:
+    if not is_allowed_uid(call.from_user.id if call.from_user else None):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    await call.answer("Создаю новый чат…")
+    try:
+        url = await bridge.new_dedicated_chat()
+        await call.message.edit_text(
+            f"🆕 Новый выделенный чат создан:\n`{url}`\n\n"
+            "Следующие сообщения пойдут уже в него.",
+            parse_mode="Markdown",
+            reply_markup=_status_kb(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.exception("new chat failed")
+        await call.message.edit_text(f"❌ Не удалось создать чат: {exc}", reply_markup=_status_kb())
+
+
+@router.callback_query(F.data == "liza:refresh")
+async def cb_refresh(call: CallbackQuery) -> None:
+    if not is_allowed_uid(call.from_user.id if call.from_user else None):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    await call.answer("Обновляю…")
+    text = await _status_text()
+    try:
+        await call.message.edit_text(text, parse_mode="Markdown", reply_markup=_status_kb())
+    except Exception:  # noqa: BLE001 — текст не изменился
+        await call.message.answer(text, parse_mode="Markdown", reply_markup=_status_kb())
 
 
 @router.message(Command("dump"))
