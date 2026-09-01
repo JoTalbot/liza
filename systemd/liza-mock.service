@@ -1,0 +1,31 @@
+[Unit]
+Description=Liza Mock OpenAI API (Playwright RPA -> Gemini via CDP)
+Documentation=https://github.com/JoTalbot/liza
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/liza-mock
+Environment=CDP_URL=http://127.0.0.1:9222
+Environment=GEMINI_GEM_URL=https://gemini.google.com/gem/2b0f0c89e8e0/75b110e980e7e994
+Environment=MOCK_API_KEY=mock-rpa-key
+Environment=MOCK_HOST=127.0.0.1
+Environment=MOCK_PORT=8000
+Environment=MOCK_TIMEOUT=300
+Environment=MOCK_FALLBACK_AFTER=240
+ExecStart=/opt/liza-mock/venv/bin/python /opt/liza-mock/mock_openai_rpa.py
+Restart=always
+RestartSec=5
+# аккуратная остановка
+TimeoutStopSec=15
+KillSignal=SIGINT
+
+# безопасность
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

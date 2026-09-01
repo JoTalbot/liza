@@ -1,0 +1,19 @@
+[Unit]
+Description=Liza Telegram-Hermes bridge
+After=network-online.target liza-mock.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/liza-mock
+Environment=HERMES_BIN=/home/ubuntu/hermes-venv/bin/hermes
+Environment=MAX_BLOCK=4000
+EnvironmentFile=/opt/liza-mock/.telegram.env
+ExecStart=/opt/liza-mock/venv/bin/python /opt/liza-mock/telegram_hermes_bridge.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
