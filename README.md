@@ -12,7 +12,7 @@ google-api-python-client (Google Docs API)
 ## Структура
 ```
 main.py          — Long polling, фильтр ALLOWED_USER_ID, конвейер текст/голос → LLM
-ai_brain.py      — LLM-мозг: Groq chat (llama-3.3-70b-versatile + fallback),
+ai_brain.py      — LLM-мозг: Groq chat (groq/compound + fallback qwen3.8-27b),
                    контекст из SQLite, ротация ключей при 429
 google_sync.py   — реалтайм-синк в Google Doc: webhook ИЛИ Docs API (graceful-fail)
 transcriber.py   — .ogg → текст через Groq Whisper, ротация ключей, чистка temp
@@ -29,8 +29,8 @@ Dockerfile       — python:3.11-slim, WORKDIR /app, база в /data
 
 ## Конфигурация (.env)
 Обязательные: `BOT_TOKEN`, `ALLOWED_USER_ID`, `GROQ_API_KEYS`.
-Опциональные: `GROQ_CHAT_MODEL` (по умолч. `llama-3.3-70b-versatile`),
-`GROQ_CHAT_FALLBACK_MODEL` (по умолч. `llama-3.1-8b-instant`), `LLM_CONTEXT_SIZE`.
+Опциональные: `GROQ_CHAT_MODEL` (по умолч. `groq/compound`),
+`GROQ_CHAT_FALLBACK_MODEL` (по умолч. `qwen/qwen3.8-27b`), `LLM_CONTEXT_SIZE`.
 
 ## Google Docs синк
 Достаточно одного из способов (иначе бот пишет warning в лог и работает дальше):

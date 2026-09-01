@@ -30,8 +30,10 @@ if not GROQ_API_KEYS:
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "whisper-large-v3")
 
 # --- LLM-мозг (чат) ---
-GROQ_CHAT_MODEL = os.environ.get("GROQ_CHAT_MODEL", "llama-3.3-70b-versatile")
-GROQ_CHAT_FALLBACK_MODEL = os.environ.get("GROQ_CHAT_FALLBACK_MODEL", "llama-3.1-8b-instant")
+# Актуальные модели Groq (сентябрь 2026): llama-3.x сняты с аккаунта,
+# доступны groq/compound, openai/gpt-oss-*, qwen/qwen3.x-27b.
+GROQ_CHAT_MODEL = os.environ.get("GROQ_CHAT_MODEL", "groq/compound")
+GROQ_CHAT_FALLBACK_MODEL = os.environ.get("GROQ_CHAT_FALLBACK_MODEL", "qwen/qwen3.8-27b")
 LLM_CONTEXT_SIZE = max(1, int(os.environ.get("LLM_CONTEXT_SIZE", "10")))
 
 # --- Google Docs синк (опционально) ---
