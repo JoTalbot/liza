@@ -99,3 +99,45 @@ docker restart liza-browser   # если Chromium завис
 полный контроль над браузером). Рекомендуется:
 - задать `VNC_PASSWORD` в `docker-compose.yml` (для noVNC), и/или
 - закрыть порты в security list (Oracle) и ходить только по SSH/превью.
+
+## Перенос на новый сервер (полный redeploy)
+
+Всё хранится на GitHub (код + секреты). Чтобы поднять систему на **новом** OCI-инстансе:
+
+1. **Создай инстанс** в OCI (Ubuntu 22.04/24.04, ARM A1, любой размер — workflow сам
+   не трогает железо, но для комфорта 4 OCPU / 24 GB).
+2. **Добавь SSH-ключ сервера** в секрет репозитория:
+   `Settings → Secrets and variables → Actions → New repository secret`
+   - `SSH_PRIVATE_KEY` — приватный ключ `ubuntu` (тот же, что указывал при создании
+     инстанса).
+3. **Обнови IP в переменной репозитория:**
+   `Settings → Secrets and variables → Actions → Variables` → `SERVER_HOST`
+   (поставить новый публичный IP инстанса).
+4. **Запусти деплой вручную:** GitHub → репозиторий `JoTalbot/liza` → Actions →
+   «Deploy Liza Bot» → Run workflow. Workflow сам:
+   - установит Docker + compose на новом сервере (если нет);
+   - склонирует код, соберёт `.env` из секретов, загрузит его;
+   - поднимет браузерный контейнер (`liza-browser`, порты 6080/9222);
+   - задеплоит бота (`liza-bot`).
+5. **Войди в Google (единственный ручной шаг):** открой
+   `http://<SERVER_HOST>:6080/vnc.html`, войди в Google-аккаунт один раз.
+6. Напиши боту `/status` или любое сообщение — Лизa создаст/подхватит Gem-чат
+   (`GEMINI_GEM_URL` из секретов).
+
+При повторных деплоях workflow **не трогает** `liza-browser` (чтобы не потерять
+сессию Google) — пересоздаётся только бот.
+
+### Требуемые секреты репозитория
+
+| Секрет | Что это |
+|---|---|
+| `BOT_TOKEN` | Токен Telegram-бота (@BotFather) |
+| `ALLOWED_USER_ID` | Твой Telegram user ID |
+| `GROQ_API_KEYS` | Ключи Groq (whisper + fallback) |
+| `GEMINI_GEM_URL` | URL кастомного Gem «Liza» |
+| `SSH_PRIVATE_KEY` | Приватный ключ доступа к серверу (ubuntu) |
+
+Опционально: `GOOGLE_DOC_WEBHOOK_URL`, `GOOGLE_SERVICE_ACCOUNT_JSON`,
+`GOOGLE_DOC_ID` (Google Docs sync), `DAILY_DIGEST_TIME`.
+
+Переменная репозитория: `SERVER_HOST` (IP сервера).

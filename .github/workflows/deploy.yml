@@ -19,50 +19,101 @@ jobs:
           echo 'BOT_TOKEN=${{ secrets.BOT_TOKEN }}' > .env
           echo 'ALLOWED_USER_ID=${{ secrets.ALLOWED_USER_ID }}' >> .env
           echo 'GROQ_API_KEYS=${{ secrets.GROQ_API_KEYS }}' >> .env
-          if [ -n "${{ secrets.GROQ_CHAT_MODEL }}" ]; then echo 'GROQ_CHAT_MODEL=${{ secrets.GROQ_CHAT_MODEL }}' >> .env; fi
           if [ -n "${{ secrets.GEMINI_GEM_URL }}" ]; then echo 'GEMINI_GEM_URL=${{ secrets.GEMINI_GEM_URL }}' >> .env; fi
           if [ -n "${{ secrets.GOOGLE_DOC_WEBHOOK_URL }}" ]; then echo 'GOOGLE_DOC_WEBHOOK_URL=${{ secrets.GOOGLE_DOC_WEBHOOK_URL }}' >> .env; fi
           if [ -n "${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}" ]; then echo 'GOOGLE_SERVICE_ACCOUNT_JSON=${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' >> .env; fi
           if [ -n "${{ secrets.GOOGLE_DOC_ID }}" ]; then echo 'GOOGLE_DOC_ID=${{ secrets.GOOGLE_DOC_ID }}' >> .env; fi
+          if [ -n "${{ secrets.DAILY_DIGEST_TIME }}" ]; then echo 'DAILY_DIGEST_TIME=${{ secrets.DAILY_DIGEST_TIME }}' >> .env; fi
           wc -l .env
 
-      - name: Prepare server (clone code)
+      # --- Подготовка сервера (работает и на новом, и на существующем) ---
+      # IP сервера задаётся переменной репозитория SERVER_HOST
+      # (Settings -> Secrets and variables -> Actions -> Variables)
+      - name: Prepare server (install docker, clone code)
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: 129.213.177.56
+          host: ${{ vars.SERVER_HOST }}
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          timeout: 600s
           script: |
             set -e
+            # Docker Engine + Compose plugin, если ещё не установлены
+            if ! command -v docker >/dev/null 2>&1; then
+              echo "== Устанавливаю Docker =="
+              sudo apt-get update
+              sudo apt-get install -y ca-certificates curl
+              sudo install -m 0755 -d /etc/apt/keyrings
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+              sudo chmod a+r /etc/apt/keyrings/docker.gpg
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+              sudo apt-get update
+              sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+              sudo usermod -aG docker ubuntu
+            else
+              echo "== Docker уже установлен =="
+            fi
+            sudo systemctl enable --now docker
+            # каталоги данных
+            sudo mkdir -p /opt/liza_data /opt/liza_chrome_profile
+            # код
             cd /home/ubuntu
             rm -rf liza
             git clone --depth 1 https://github.com/JoTalbot/liza.git liza
-            sudo mkdir -p /opt/liza_data /opt/liza_chrome_profile
 
       - name: Upload .env to server
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: 129.213.177.56
+          host: ${{ vars.SERVER_HOST }}
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: ".env"
           target: "/home/ubuntu/liza"
 
-      - name: Deploy bot (without touching browser)
+      # --- Поднимаем браузер ТОЛЬКО если его ещё нет (новый сервер) ---
+      # На существующем сервере liza-browser не трогаем — иначе теряется
+      # сессия входа в Google (session-куки живут в памяти Chrome).
+      - name: Start browser (new server only, keep existing Google session)
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: 129.213.177.56
+          host: ${{ vars.SERVER_HOST }}
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          timeout: 900s
           script: |
             set -e
             cd /home/ubuntu/liza
-            grep -q '^BOT_TOKEN=.\+' .env || { echo '!! BOT_TOKEN пуст'; exit 1; }
-            grep -q '^ALLOWED_USER_ID=.\+' .env || { echo '!! ALLOWED_USER_ID пуст'; exit 1; }
-            grep -q '^GROQ_API_KEYS=.\+' .env || { echo '!! GROQ_API_KEYS пуст'; exit 1; }
+            if sudo docker ps -a --format '{{.Names}}' | grep -qx 'liza-browser'; then
+              echo '== Браузер уже существует — НЕ трогаем (Google-сессия сохраняется) =='
+            else
+              echo '== liza-browser не найден — поднимаю впервые (docker compose) =='
+              sudo docker compose up -d --build browser
+            fi
+            # сеть liza_default нужна для docker run бота
+            sudo docker network inspect liza_default >/dev/null 2>&1 \
+              || sudo docker network create liza_default \
+              || true
+            echo '== docker ps =='
+            sudo docker ps --filter name=liza --format 'table {{.Names}}\t{{.Status}}'
+
+      # --- Деплой бота (пересоздаём ТОЛЬКО liza-bot) ---
+      - name: Deploy bot (without touching browser)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ vars.SERVER_HOST }}
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          timeout: 600s
+          script: |
+            set -e
+            cd /home/ubuntu/liza
+            grep -q '^BOT_TOKEN=.\\+' .env || { echo '!! BOT_TOKEN пуст'; exit 1; }
+            grep -q '^ALLOWED_USER_ID=.\\+' .env || { echo '!! ALLOWED_USER_ID пуст'; exit 1; }
+            grep -q '^GROQ_API_KEYS=.\\+' .env || { echo '!! GROQ_API_KEYS пуст'; exit 1; }
             # ВАЖНО: пересоздаём ТОЛЬКО бота (docker build/run напрямую).
             # Контейнер liza-browser НЕ трогаем вообще — иначе теряется
             # сессия входа в Google (session-куки живут в памяти Chrome).
+            sudo docker network inspect liza_default >/dev/null 2>&1 || sudo docker network create liza_default || true
             sudo docker build -t liza-bot .
             sudo docker stop -t 15 liza-bot 2>/dev/null || true
             sudo docker rm liza-bot 2>/dev/null || true
@@ -82,3 +133,8 @@ jobs:
             echo ''
             echo '== noVNC check =='
             curl -s -m 8 -o /dev/null -w 'noVNC HTTP %{http_code}\n' http://localhost:6080/vnc.html || echo 'noVNC ещё не готов'
+            echo ''
+            echo '== Google login check =='
+            curl -s -m 8 http://localhost:9222/json/version >/dev/null 2>&1 \
+              && echo 'Откройте http://'"${{ vars.SERVER_HOST }}"':6080/vnc.html и войдите в Google (если бот говорит "нужен вход")' \
+              || true
