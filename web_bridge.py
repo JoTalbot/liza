@@ -113,6 +113,23 @@ RESPONSE_SELECTORS = [
     "div[class*='response-content']",
 ]
 
+# Слова-маркеры интерфейса Gemini (левое меню и т.п.) — если извлечённый
+# «ответ» состоит из них, это ещё не ответ модели, а мусор DOM.
+INTERFACE_NOISE_KEYWORDS = [
+    "новый чат", "поиск по чатам", "начать чат", "видео", "библиотека",
+    "gem-боты", "блокноты", "гаражи", "недавние", "настроить",
+    "чат с gemini", "обзор", "создано с", "подтвердить", "продолжить",
+]
+
+
+def _looks_like_interface(text: str) -> bool:
+    """True, если текст больше похож на интерфейс Gemini, чем на ответ модели."""
+    if not text:
+        return True
+    low = text.lower()
+    hits = sum(1 for k in INTERFACE_NOISE_KEYWORDS if k in low)
+    return hits >= 2 and len(text) < 600
+
 ADVANCED_KEYWORDS = [
     "advanced", "pro", "plus", "thinking", "think", "extended", "deep",
     "продвинут", "мышлен", "думать", "расшир", "продолж",
@@ -579,10 +596,18 @@ class WebBridge:
             await self._wait_stop_button(timeout=10)
 
         await self._wait_generation_done(timeout=config.GEMINI_RESPONSE_TIMEOUT)
-        await asyncio.sleep(1)
-        reply = await self._extract_last_response()
+
+        # ответ мог ещё не появиться в DOM (гонка) — ждём и переспрашиваем
+        reply = ""
+        for attempt in range(6):
+            reply = await self._extract_last_response()
+            if reply and not _looks_like_interface(reply):
+                break
+            await asyncio.sleep(2)
         if not reply:
             raise RuntimeError("Пустой ответ от Gemini")
+        if _looks_like_interface(reply):
+            raise RuntimeError("Ответ Gemini не распознан (интерфейс изменился)")
 
         # сохраняем актуальный URL чата (появляется id после первого сообщения)
         try:
@@ -635,7 +660,10 @@ class WebBridge:
         return False
 
     async def _wait_generation_done(self, timeout: float) -> None:
-        """Ждёт завершения генерации: исчез Stop И/ИЛИ стабилизация ответа."""
+        """Ждёт завершения генерации: исчез Stop И/ИЛИ стабилизация ответа.
+
+        «Мусор» интерфейса (левое меню) не считается ответом — ждём дальше.
+        """
         last_snapshot = ""
         stable_for = 0
         start = time.monotonic()
@@ -644,7 +672,7 @@ class WebBridge:
             snapshot = await self._last_response_text()
             if stop_visible:
                 stable_for = 0
-            elif snapshot:
+            elif snapshot and not _looks_like_interface(snapshot):
                 if snapshot == last_snapshot:
                     stable_for += 1
                     if stable_for >= 2:
@@ -663,23 +691,19 @@ class WebBridge:
             return ""
 
     async def _extract_last_response(self) -> str:
+        """Ищет последний НЕПУСТОЙ и НЕ-интерфейсный ответ модели.
+
+        Если все message-content — мусор/пустые, возвращает "" (значит,
+        настоящий ответ ещё не появился, нужно подождать).
+        """
         for sel in RESPONSE_SELECTORS:
             try:
                 loc = self._page.locator(sel)
                 n = await loc.count()
                 for i in range(n - 1, -1, -1):
                     t = (await loc.nth(i).inner_text() or "").strip()
-                    if t:
+                    if t and not _looks_like_interface(t):
                         return t
             except Exception:  # noqa: BLE001
                 continue
-        # фолбэк: текст body после последнего вхождения промпта
-        try:
-            body = await self._page.locator("body").inner_text()
-            if self._last_prompt:
-                idx = body.rfind(self._last_prompt)
-                if idx != -1:
-                    return body[idx + len(self._last_prompt):].strip()[:4000]
-            return body[-4000:].strip()
-        except Exception:  # noqa: BLE001
-            return ""
+        return ""
