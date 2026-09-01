@@ -56,6 +56,9 @@ def build_starter_prompt(context: str = "") -> str:
         "2) отвечай на русском, кратко и по делу; "
         "3) если я скажу «запомни» или пришлю важную информацию, подтверждай "
         "запоминание тегом [MEM_UPDATE: суть]. "
+        "4) не начинай ответы с технической шапки («Краткая выжимка», "
+        "«Системный статус», «Подробный отчёт») и не вставляй названия "
+        "вики-файлов в текст ответа — отвечай сразу по сути. "
         "Просто подтверди, что поняла правила, одним коротким предложением."
     )
 
@@ -68,6 +71,9 @@ def build_context_prompt(context: str = "") -> str:
         "Запомни этот контекст — это моя база знаний (личность, проекты, люди, "
         "юмор). Используй его в наших дальнейших разговорах:\n\n"
         f"{context}\n\n"
+        "И ещё правило на будущее: отвечай сразу по сути, не начинай ответы "
+        "с технической шапки («Краткая выжимка», «Системный статус», "
+        "«Подробный отчёт») и не вставляй названия вики-файлов в текст ответа. "
         "Подтверди одним словом, что запомнила."
     )
 
@@ -164,6 +170,65 @@ def _looks_like_interface(text: str) -> bool:
     low = text.lower()
     hits = sum(1 for k in INTERFACE_NOISE_KEYWORDS if k in low)
     return hits >= 2 and len(text) < 600
+
+# --- чистка технической «шапки» в начале ответов Лизы ---
+# Модель (через Gem) часто начинает ответ техническим статусом:
+# «Краткая выжимка: ...», «Системный статус: ...», «Подробный отчёт ...»,
+# плюс вставляет отдельные строки-хвосты вики-файлов (Wiki_00_Master_Protocol_V3).
+TECH_PREAMBLE_MARKERS = [
+    "краткая выжимка", "краткое резюме", "системный статус", "статус системы",
+    "текущий статус", "технический статус", "подробный отчёт", "системный отчёт",
+    "инфраструктура", "текущий фокус", "доступ:", "модель:", "версия:",
+    "протокол l0", "протокол активации", "мост playwright", "все контуры",
+    "все модули", "контекст загружен", "l0 core", "л0 core", "dnk", "днк",
+    # секции тех.отчёта (LizaBrain L0–L3 и т.п.)
+    "тон:", "архитектура", "лог решений", "l1", "l2", "l3",
+]
+WIKI_REF_RE = re.compile(r"wiki[\w.\-]*", re.IGNORECASE)
+
+
+def _line_norm(line: str) -> str:
+    """Нижний регистр + снимаем markdown-обёртку в начале строки."""
+    s = (line or "").strip().lower()
+    for _ in range(4):
+        ns = s.lstrip("*#-•—–> ")
+        if ns == s:
+            break
+        s = ns
+    return s
+
+
+def _strip_technical_preamble(text: str) -> str:
+    """Убирает техническую «шапку» из начала ответа Лизы.
+
+    - скипает в начале строки-статусы/отчёты (по маркерам) и пустые строки;
+    - удаляет по всему тексту отдельные строки-хвосты вики-файлов
+      (Wiki_00_Master_Protocol_V3 и т.п.);
+    - схлопывает 3+ переносов.
+    Если после чистки не осталось текста — возвращает оригинал (не ломаем ответ).
+    """
+    if not text:
+        return text
+    lines = text.splitlines()
+
+    start = 0
+    while start < len(lines):
+        low = _line_norm(lines[start])
+        if not low:
+            start += 1
+            continue
+        if WIKI_REF_RE.fullmatch(low):
+            start += 1
+            continue
+        if any(low.startswith(m) for m in TECH_PREAMBLE_MARKERS):
+            start += 1
+            continue
+        break
+
+    kept = [ln for ln in lines[start:] if not WIKI_REF_RE.fullmatch(_line_norm(ln))]
+    cleaned = "\n".join(kept).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned or text.strip()
 
 ADVANCED_KEYWORDS = [
     "advanced", "pro", "plus", "thinking", "think", "extended", "deep",
@@ -618,6 +683,8 @@ class WebBridge:
             reply = await self._submit_and_extract(text)
             # пайплайн памяти: [MEM_UPDATE: ...] -> SQLite + паспорта проектов
             reply, payload = await google_sync.memory_manager.process_text_for_memory(reply)
+            # техническая «шапка» (статусы/отчёты/вики-хвосты) в начале ответа не нужна
+            reply = _strip_technical_preamble(reply)
             self.memory_updates = [payload] if payload else []
             if payload:
                 log.info("MEM_UPDATE: извлечено 1 обновление памяти")
