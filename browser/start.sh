@@ -51,12 +51,16 @@ socat TCP-LISTEN:9222,fork,reuseaddr TCP:127.0.0.1:9223 &
 SOCAT_PID=$!
 
 graceful_shutdown() {
-  echo "$(date -u +%FT%TZ) SIGTERM: корректно закрываю Chromium (куки сохраняются)..."
-  # сперва аккуратно останавливаем Chromium — он флашит cookies/сессии на диск
+  echo "$(date -u +%FT%TZ) SIGTERM: корректно закрываю Chromium (session-куки сохраняются)..."
+  # Chromium записывает session-куки (вход Google) на диск только при
+  # корректном закрытии. Даём ему достаточно времени и повторяем SIGTERM.
   if [ -n "$CHROME_PID" ] && kill -0 "$CHROME_PID" 2>/dev/null; then
     kill -TERM "$CHROME_PID"
-    for i in $(seq 1 15); do
+    for i in $(seq 1 25); do
       kill -0 "$CHROME_PID" 2>/dev/null || break
+      if [ "$i" -eq 10 ] || [ "$i" -eq 20 ]; then
+        kill -TERM "$CHROME_PID" 2>/dev/null || true
+      fi
       sleep 1
     done
     kill -9 "$CHROME_PID" 2>/dev/null || true
