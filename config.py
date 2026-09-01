@@ -28,4 +28,15 @@ if not GROQ_API_KEYS:
     raise RuntimeError("GROQ_API_KEYS не задан или пуст")
 
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "whisper-large-v3")
+
+# --- LLM-мозг (чат) ---
+GROQ_CHAT_MODEL = os.environ.get("GROQ_CHAT_MODEL", "llama-3.3-70b-versatile")
+GROQ_CHAT_FALLBACK_MODEL = os.environ.get("GROQ_CHAT_FALLBACK_MODEL", "llama-3.1-8b-instant")
+LLM_CONTEXT_SIZE = max(1, int(os.environ.get("LLM_CONTEXT_SIZE", "10")))
+
+# --- Google Docs синк (опционально) ---
+GOOGLE_DOC_WEBHOOK_URL = os.environ.get("GOOGLE_DOC_WEBHOOK_URL", "").strip()
+GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+GOOGLE_DOC_ID = os.environ.get("GOOGLE_DOC_ID", "").strip()
+
 DB_PATH = os.environ.get("DB_PATH", "/data/context.db")

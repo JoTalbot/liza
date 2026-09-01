@@ -3,6 +3,7 @@ name: Deploy Liza Bot
 on:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -18,6 +19,10 @@ jobs:
           echo 'BOT_TOKEN=${{ secrets.BOT_TOKEN }}' > .env
           echo 'ALLOWED_USER_ID=${{ secrets.ALLOWED_USER_ID }}' >> .env
           echo 'GROQ_API_KEYS=${{ secrets.GROQ_API_KEYS }}' >> .env
+          if [ -n "${{ secrets.GROQ_CHAT_MODEL }}" ]; then echo 'GROQ_CHAT_MODEL=${{ secrets.GROQ_CHAT_MODEL }}' >> .env; fi
+          if [ -n "${{ secrets.GOOGLE_DOC_WEBHOOK_URL }}" ]; then echo 'GOOGLE_DOC_WEBHOOK_URL=${{ secrets.GOOGLE_DOC_WEBHOOK_URL }}' >> .env; fi
+          if [ -n "${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}" ]; then echo 'GOOGLE_SERVICE_ACCOUNT_JSON=${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' >> .env; fi
+          if [ -n "${{ secrets.GOOGLE_DOC_ID }}" ]; then echo 'GOOGLE_DOC_ID=${{ secrets.GOOGLE_DOC_ID }}' >> .env; fi
           wc -l .env
 
       - name: Prepare server (clone code)
