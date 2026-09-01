@@ -107,9 +107,9 @@ jobs:
           script: |
             set -e
             cd /home/ubuntu/liza
-            grep -q '^BOT_TOKEN=.\\+' .env || { echo '!! BOT_TOKEN пуст'; exit 1; }
-            grep -q '^ALLOWED_USER_ID=.\\+' .env || { echo '!! ALLOWED_USER_ID пуст'; exit 1; }
-            grep -q '^GROQ_API_KEYS=.\\+' .env || { echo '!! GROQ_API_KEYS пуст'; exit 1; }
+            grep -q '^BOT_TOKEN=.' .env || { echo '!! BOT_TOKEN пуст'; exit 1; }
+            grep -q '^ALLOWED_USER_ID=.' .env || { echo '!! ALLOWED_USER_ID пуст'; exit 1; }
+            grep -q '^GROQ_API_KEYS=.' .env || { echo '!! GROQ_API_KEYS пуст'; exit 1; }
             # ВАЖНО: пересоздаём ТОЛЬКО бота (docker build/run напрямую).
             # Контейнер liza-browser НЕ трогаем вообще — иначе теряется
             # сессия входа в Google (session-куки живут в памяти Chrome).
