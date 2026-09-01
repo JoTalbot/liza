@@ -11,6 +11,7 @@ URL которого хранится в /data/chat_session.json. При каж�
 import asyncio
 import json
 import logging
+import re
 import socket
 import time
 import urllib.request
@@ -26,6 +27,19 @@ log = logging.getLogger(__name__)
 
 CHAT_SESSION_FILE = Path(config.DATA_DIR) / "chat_session.json"
 GEMINI_APP_URL = "https://gemini.google.com/app"
+
+# Стартовый промпт авто-инициализации (активация персоны Лизы + Google Drive)
+STARTER_PROMPT = (
+    '@Google Drive найди и прочитай файл "LizaBrain". '
+    "Ты — Лиза, мой автономный ассистент и второй мозг. "
+    "Загрузи личность и память. "
+    "Правило: если появляется важная новая информация для сохранения в память, "
+    "добавь в конце ответа тег [MEM_UPDATE: суть обновления]. "
+    "Подтверди готовность!"
+)
+
+# Тег памяти: [MEM_UPDATE: суть обновления] в конце ответа модели
+MEM_UPDATE_RE = re.compile(r"\[MEM_UPDATE:\s*(.*?)\]", re.IGNORECASE | re.DOTALL)
 
 # --- селекторы (с запасными вариантами) ---
 INPUT_SELECTORS = [
@@ -119,6 +133,8 @@ class WebBridge:
         self._last_prompt = ""
         self.chat_url = ""
         self.current_model = ""
+        self.memory_updates: list[str] = []   # извлечённые [MEM_UPDATE: ...] последнего ответа
+        self._init_confirmation = ""          # текст подтверждения после стартового промпта
 
     # ---------- подключение ----------
     async def connect(self) -> None:
@@ -304,10 +320,20 @@ class WebBridge:
         log.warning("Кнопка «Новый чат» не найдена — работаю с текущим чатом")
         return False
 
-    # ---------- смена чата ----------
+    # ---------- смена чата + авто-инициализация ----------
     async def new_dedicated_chat(self) -> str:
-        """Создаёт НОВЫЙ выделенный чат Gemini и сохраняет его URL.
-        Дальнейшие сообщения бота пойдут в этот новый чат."""
+        """Создаёт НОВЫЙ выделенный чат Gemini с полной авто-инициализацией."""
+        return await self.init_dedicated_chat()
+
+    async def init_dedicated_chat(self) -> str:
+        """Авто-инициализация выделенного чата:
+
+        1) создаёт новый чат Gemini;
+        2) выбирает самую продвинутую модель и включает Extended Thinking;
+        3) отправляет стартовый промпт (персона Лизы + @Google Drive LizaBrain);
+        4) ждёт подтверждение модели;
+        5) сохраняет URL чата в /data/chat_session.json.
+        """
         async with self._lock:
             await self.ensure_ready()
             try:
@@ -317,14 +343,41 @@ class WebBridge:
             await asyncio.sleep(3)
             if await self.requires_login():
                 raise RuntimeError("Требуется вход в Google (noVNC)")
+
             await self._try_click_new_chat()
             await asyncio.sleep(2)
             await self._try_enable_extended_thinking()
+            await asyncio.sleep(1)
+
+            # стартовый промпт активации персоны + привязки Google Drive
+            try:
+                confirmation = await self._submit_and_extract(STARTER_PROMPT)
+                self._init_confirmation = confirmation
+                log.info(
+                    "Инициализация Лизы: подтверждение получено (%d симв.): %.120s",
+                    len(confirmation), confirmation,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._init_confirmation = ""
+                log.warning("Стартовый промпт Лизы не удался: %s", exc)
+
             url = self._page.url or GEMINI_APP_URL
             self.chat_url = url
             self._save_session(url, self.current_model)
-            log.info("Новый выделенный чат: %s (model=%s)", url, self.current_model or "?")
+            log.info("Выделенный чат инициализирован: %s (model=%s)", url, self.current_model or "?")
             return url
+
+    # ---------- MEM_UPDATE парсинг ----------
+    def _parse_memory_updates(self, reply: str) -> tuple[str, list[str]]:
+        """Извлекает [MEM_UPDATE: ...] теги из ответа.
+
+        Возвращает (очищенный ответ, список обновлений памяти).
+        Тег удаляется из финального текста, который уходит пользователю.
+        """
+        updates = [m.group(1).strip() for m in MEM_UPDATE_RE.finditer(reply) if m.group(1).strip()]
+        cleaned = MEM_UPDATE_RE.sub("", reply)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return cleaned, updates
 
     # ---------- статус модели ----------
     async def get_model_status(self) -> str:
@@ -484,6 +537,11 @@ class WebBridge:
 
     # ---------- отправка промпта и извлечение ответа ----------
     async def send_prompt_to_chat(self, text: str) -> str:
+        """Отправляет текст в выделенный чат, ждёт ответ.
+
+        Возвращает ОЧИЩЕННЫЙ ответ (без [MEM_UPDATE: ...] тегов).
+        Обновления памяти доступны в self.memory_updates (обрабатывает main.py).
+        """
         async with self._lock:
             await self.ensure_ready()
             if not await self.ensure_dedicated_chat():
@@ -491,41 +549,50 @@ class WebBridge:
             if await self.requires_login():
                 raise RuntimeError("Нет входа в Google — откройте http://<IP>:6080/vnc.html и войдите в аккаунт")
 
-            text = (text or "").strip()
-            if not text:
-                raise RuntimeError("Пустой промпт")
-            self._last_prompt = text
-
-            box = await self._find_input()
-            if not box:
-                raise RuntimeError("Не найдено поле ввода Gemini (страница входа?)")
-
-            await box.click()
-            await self._page.keyboard.type(text, delay=1)
-            await self._page.keyboard.press("Enter")
-
-            started = await self._wait_stop_button(timeout=10)
-            if not started:
-                clicked = await self._click_send_button()
-                if not clicked:
-                    await self._page.keyboard.press("Enter")
-                await self._wait_stop_button(timeout=10)
-
-            await self._wait_generation_done(timeout=config.GEMINI_RESPONSE_TIMEOUT)
-            await asyncio.sleep(1)
-            reply = await self._extract_last_response()
-            if not reply:
-                raise RuntimeError("Пустой ответ от Gemini")
-
-            # сохраняем актуальный URL чата (появляется id после первого сообщения)
-            try:
-                url = self._page.url
-                if "gemini.google.com" in url and url != GEMINI_APP_URL:
-                    self.chat_url = url
-                    self._save_session(url, self.current_model)
-            except Exception:  # noqa: BLE001
-                pass
+            reply = await self._submit_and_extract(text)
+            reply, updates = self._parse_memory_updates(reply)
+            self.memory_updates = updates
+            if updates:
+                log.info("MEM_UPDATE: извлечено %d обновлений памяти", len(updates))
             return reply
+
+    async def _submit_and_extract(self, text: str) -> str:
+        """Вводит промпт, запускает генерацию, ждёт завершения и возвращает сырой ответ."""
+        text = (text or "").strip()
+        if not text:
+            raise RuntimeError("Пустой промпт")
+        self._last_prompt = text
+
+        box = await self._find_input()
+        if not box:
+            raise RuntimeError("Не найдено поле ввода Gemini (страница входа?)")
+
+        await box.click()
+        await self._page.keyboard.type(text, delay=1)
+        await self._page.keyboard.press("Enter")
+
+        started = await self._wait_stop_button(timeout=10)
+        if not started:
+            clicked = await self._click_send_button()
+            if not clicked:
+                await self._page.keyboard.press("Enter")
+            await self._wait_stop_button(timeout=10)
+
+        await self._wait_generation_done(timeout=config.GEMINI_RESPONSE_TIMEOUT)
+        await asyncio.sleep(1)
+        reply = await self._extract_last_response()
+        if not reply:
+            raise RuntimeError("Пустой ответ от Gemini")
+
+        # сохраняем актуальный URL чата (появляется id после первого сообщения)
+        try:
+            url = self._page.url
+            if "gemini.google.com" in url and url != GEMINI_APP_URL:
+                self.chat_url = url
+                self._save_session(url, self.current_model)
+        except Exception:  # noqa: BLE001
+            pass
+        return reply
 
     async def _find_input(self):
         for sel in INPUT_SELECTORS:

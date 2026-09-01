@@ -47,6 +47,18 @@ def _sync(kind: str, content: str) -> None:
     asyncio.create_task(google_sync.append_entry(kind, content))
 
 
+def _process_memory_updates() -> int:
+    """Извлекает [MEM_UPDATE] из bridge.memory_updates, пишет в SQLite
+    (type=MEM_UPDATE) и в Google Docs; возвращает количество."""
+    updates = list(getattr(bridge, "memory_updates", []) or [])
+    bridge.memory_updates = []
+    for upd in updates:
+        db.add_note("MEM_UPDATE", upd)
+        _sync("MEM_UPDATE", upd)
+        log.info("MEM_UPDATE сохранён: %.100s", upd)
+    return len(updates)
+
+
 # ---------- статус и кнопки ----------
 def _status_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -107,7 +119,8 @@ async def cmd_start(message: Message) -> None:
         "Пиши текстом или голосовыми — я отвечаю и запоминаю всё.\n\n"
         "Команды:\n"
         "• /start — это сообщение\n"
-        "• /status — статус Web Bridge\n"
+        "• /status — статус Web Bridge (кнопки: новый чат / обновить)\n"
+        "• /newchat — создать и инициализировать новый выделенный чат\n"
         "• /dump [n] — последние n записей из памяти",
         parse_mode="Markdown",
     )
@@ -130,8 +143,10 @@ async def cmd_new_chat(message: Message) -> None:
     status = await message.answer("🆕 Создаю новый выделенный чат…")
     try:
         url = await bridge.new_dedicated_chat()
+        n_upd = _process_memory_updates()
+        extra = f"\n\n🧠 Обновлений памяти: {n_upd}." if n_upd else ""
         await status.edit_text(
-            f"🆕 Новый выделенный чат создан:\n`{url}`\n\n"
+            f"🆕 Новый выделенный чат создан и инициализирован:\n`{url}`{extra}\n\n"
             "Следующие сообщения пойдут уже в него.",
             parse_mode="Markdown",
             reply_markup=_status_kb(),
@@ -149,8 +164,10 @@ async def cb_new_chat(call: CallbackQuery) -> None:
     await call.answer("Создаю новый чат…")
     try:
         url = await bridge.new_dedicated_chat()
+        n_upd = _process_memory_updates()
+        extra = f"\n\n🧠 Обновлений памяти: {n_upd}." if n_upd else ""
         await call.message.edit_text(
-            f"🆕 Новый выделенный чат создан:\n`{url}`\n\n"
+            f"🆕 Новый выделенный чат создан и инициализирован:\n`{url}`{extra}\n\n"
             "Следующие сообщения пойдут уже в него.",
             parse_mode="Markdown",
             reply_markup=_status_kb(),
@@ -193,7 +210,7 @@ async def cmd_dump(message: Message) -> None:
         await message.answer("📭 Память пока пуста.")
         return
 
-    icons = {"text": "📝", "voice": "🎧", "assistant": "🤖"}
+    icons = {"text": "📝", "voice": "🎧", "assistant": "🤖", "MEM_UPDATE": "🧠"}
     lines = [f"📚 Последние **{len(rows)}** записей:"]
     for i, row in enumerate(rows, start=1):
         icon = icons.get(row["type"], "📌")
@@ -216,6 +233,10 @@ async def _reply_to(message: Message, status: Message | None, user_input: str, n
             raise RuntimeError("Пустой ответ от Gemini")
         source = "gemini"
         log.info("Ответ получен из Gemini (%d симв.)", len(reply))
+        # [MEM_UPDATE: ...] из ответа → SQLite + Google Docs
+        n_upd = _process_memory_updates()
+        if n_upd:
+            log.info("Обработано MEM_UPDATE: %d", n_upd)
     except Exception as exc:  # noqa: BLE001
         log.warning("Web Bridge недоступен (%s) — fallback к Groq", exc)
         try:

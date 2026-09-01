@@ -19,7 +19,7 @@ import config
 
 log = logging.getLogger(__name__)
 
-TYPE_ICONS = {"text": "📝", "voice": "🎧", "assistant": "🤖"}
+TYPE_ICONS = {"text": "📝", "voice": "🎧", "assistant": "🤖", "MEM_UPDATE": "🧠"}
 
 
 def is_configured() -> bool:
