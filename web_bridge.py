@@ -11,6 +11,7 @@ URL которого хранится в /data/chat_session.json. При каж�
 import asyncio
 import json
 import logging
+import os
 import re
 import socket
 import time
