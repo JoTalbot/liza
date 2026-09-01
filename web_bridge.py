@@ -28,11 +28,16 @@ log = logging.getLogger(__name__)
 CHAT_SESSION_FILE = Path(config.DATA_DIR) / "chat_session.json"
 GEMINI_APP_URL = "https://gemini.google.com/app"
 
-# Стартовый промпт авто-инициализации (активация персоны Лизы + Google Drive)
+# Стартовый промпт авто-инициализации: персона Лизы + инструкции с Google Drive
+GEMINI_DRIVE_FOLDER = os.environ.get(
+    "GEMINI_DRIVE_FOLDER",
+    "https://drive.google.com/drive/folders/12k3z0fdt_c_f6KkWPeKxZ7LD1kvaWg8P",
+)
 STARTER_PROMPT = (
-    '@Google Drive найди и прочитай файл "LizaBrain". '
+    '@Google Drive найди и прочитай все файлы и инструкции из папки "Liza_Brain" '
+    f"({GEMINI_DRIVE_FOLDER}). "
     "Ты — Лиза, мой автономный ассистент и второй мозг. "
-    "Загрузи личность и память. "
+    "Загрузи личность, память и следуй всем инструкциям из этой папки. "
     "Правило: если появляется важная новая информация для сохранения в память, "
     "добавь в конце ответа тег [MEM_UPDATE: суть обновления]. "
     "Подтверди готовность!"
@@ -293,8 +298,8 @@ class WebBridge:
         saved_url = (saved.get("url") or "").strip()
         if saved_url and "gemini.google.com" in saved_url:
             try:
-                await self._page.goto(saved_url, wait_until="domcontentloaded", timeout=60000)
-                await asyncio.sleep(3)
+                await self._page.goto(saved_url, wait_until="domcontentloaded", timeout=45000)
+                await asyncio.sleep(1.5)
                 if await self.requires_login():
                     log.warning("Google требует вход — откройте noVNC (http://<IP>:6080/vnc.html) и войдите в аккаунт")
                     return False
@@ -305,16 +310,15 @@ class WebBridge:
                 log.warning("Не удалось открыть сохранённый чат (%s) — создам новый", exc)
 
         try:
-            await self._page.goto(GEMINI_APP_URL, wait_until="domcontentloaded", timeout=60000)
-            await asyncio.sleep(4)
+            await self._page.goto(GEMINI_APP_URL, wait_until="domcontentloaded", timeout=45000)
+            await asyncio.sleep(2)
             if await self.requires_login():
                 log.warning("Требуется вход в Google: http://<IP>:6080/vnc.html — войдите в аккаунт, затем напишите боту снова")
                 return False
 
             await self._try_click_new_chat()
-            await asyncio.sleep(2)
-            await self._try_enable_extended_thinking()
             await asyncio.sleep(1)
+            await self._try_enable_extended_thinking()
 
             self.chat_url = self._page.url
             self._save_session(self.chat_url, self.current_model)
@@ -611,13 +615,13 @@ class WebBridge:
 
         await self._wait_generation_done(timeout=config.GEMINI_RESPONSE_TIMEOUT)
 
-        # ответ мог ещё не появиться в DOM (гонка) — ждём и переспрашиваем
+        # ответ мог ещё не появиться в DOM (гонка) — ждём и переспрашиваем (быстро)
         reply = ""
-        for attempt in range(6):
+        for attempt in range(5):
             reply = await self._extract_last_response()
             if reply and not _looks_like_interface(reply):
                 break
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
         if not reply:
             raise RuntimeError("Пустой ответ от Gemini")
         if _looks_like_interface(reply):
@@ -679,6 +683,7 @@ class WebBridge:
         """Ждёт завершения генерации: исчез Stop И/ИЛИ стабилизация ответа.
 
         «Мусор» интерфейса (левое меню) не считается ответом — ждём дальше.
+        Ускорено: опрос 0.4с, стабильность после 2 одинаковых снимков.
         """
         last_snapshot = ""
         stable_for = 0
@@ -692,12 +697,12 @@ class WebBridge:
                 if snapshot == last_snapshot:
                     stable_for += 1
                     if stable_for >= 2:
-                        log.info("Ответ стабилен (~%.0f с)", time.monotonic() - start)
+                        log.info("Ответ стабилен (~%.1f с)", time.monotonic() - start)
                         return
                 else:
                     stable_for = 0
             last_snapshot = snapshot
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.4)
         log.warning("Таймаут ожидания генерации (%s с)", timeout)
 
     async def _last_response_text(self) -> str:

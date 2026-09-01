@@ -48,6 +48,7 @@ def _sync(kind: str, content: str) -> None:
 
 # ---------- анимированное статусное сообщение ----------
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+SPINNER_INTERVAL = 1.0  # сек — лимит Telegram ~1 edit/сек; чаще = 429 и «замерший» спиннер
 
 
 class StatusAnimator:
@@ -66,7 +67,7 @@ class StatusAnimator:
             except Exception:  # noqa: BLE001 — Telegram ругается на одинаковый текст
                 pass
             i += 1
-            await asyncio.sleep(0.6)
+            await asyncio.sleep(SPINNER_INTERVAL)
 
     def set_text(self, base: str) -> None:
         """Меняет подпись (анимация продолжает крутиться)."""

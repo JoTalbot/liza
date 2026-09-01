@@ -36,7 +36,7 @@ LLM_CONTEXT_SIZE = max(1, int(os.environ.get("LLM_CONTEXT_SIZE", "10")))
 
 # --- Web Bridge (Playwright CDP → Gemini) ---
 CDP_URL = os.environ.get("CDP_URL", "http://127.0.0.1:9222").strip()
-GEMINI_RESPONSE_TIMEOUT = int(os.environ.get("GEMINI_RESPONSE_TIMEOUT", "240"))
+GEMINI_RESPONSE_TIMEOUT = int(os.environ.get("GEMINI_RESPONSE_TIMEOUT", "90"))
 
 # --- Google Docs синк (опционально) ---
 GOOGLE_DOC_WEBHOOK_URL = os.environ.get("GOOGLE_DOC_WEBHOOK_URL", "").strip()
