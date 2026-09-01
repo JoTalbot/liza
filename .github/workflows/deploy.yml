@@ -60,7 +60,8 @@ jobs:
             grep -q '^ALLOWED_USER_ID=.\+' .env || { echo '!! ALLOWED_USER_ID пуст'; exit 1; }
             grep -q '^GROQ_API_KEYS=.\+' .env || { echo '!! GROQ_API_KEYS пуст'; exit 1; }
             sudo docker compose version
-            sudo docker stop liza-bot liza-browser 2>/dev/null || true
+            # -t 30: даём Chromium время записать куки/сессию (graceful shutdown)
+            sudo docker stop -t 30 liza-bot liza-browser 2>/dev/null || true
             sudo docker rm liza-bot liza-browser 2>/dev/null || true
             sudo docker compose up -d --build
             sleep 15

@@ -4,6 +4,8 @@ services:
       context: ./browser
     container_name: liza-browser
     restart: unless-stopped
+    # даём Chromium время корректно закрыться и записать куки/сессию на диск
+    stop_grace_period: 30s
     ports:
       - "6080:6080"   # noVNC web-интерфейс
       - "9222:9222"   # CDP debugging port

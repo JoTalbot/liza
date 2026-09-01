@@ -42,13 +42,32 @@ run_chromium() {
     --user-data-dir=/config/profile --no-first-run --no-default-browser-check \
     --window-size=1600,1000 --force-device-scale-factor=1 \
     "${START_URL}" &
+  CHROME_PID=$!
 }
-
-run_chromium
 
 # CDP-проброс наружу: socat слушает 0.0.0.0:9222 (host + bot) -> 127.0.0.1:9223
 echo "=== socat CDP proxy :9222 -> 127.0.0.1:9223 ==="
 socat TCP-LISTEN:9222,fork,reuseaddr TCP:127.0.0.1:9223 &
+SOCAT_PID=$!
+
+graceful_shutdown() {
+  echo "$(date -u +%FT%TZ) SIGTERM: корректно закрываю Chromium (куки сохраняются)..."
+  # сперва аккуратно останавливаем Chromium — он флашит cookies/сессии на диск
+  if [ -n "$CHROME_PID" ] && kill -0 "$CHROME_PID" 2>/dev/null; then
+    kill -TERM "$CHROME_PID"
+    for i in $(seq 1 15); do
+      kill -0 "$CHROME_PID" 2>/dev/null || break
+      sleep 1
+    done
+    kill -9 "$CHROME_PID" 2>/dev/null || true
+  fi
+  [ -n "$SOCAT_PID" ] && kill -TERM "$SOCAT_PID" 2>/dev/null || true
+  echo "$(date -u +%FT%TZ) Завершение браузерного контейнера"
+  exit 0
+}
+trap graceful_shutdown TERM INT
+
+run_chromium
 
 # Watchdog: если Chromium падает — поднимаем заново
 while true; do
