@@ -29,16 +29,19 @@ if not GROQ_API_KEYS:
 
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "whisper-large-v3")
 
-# --- LLM-мозг (чат) ---
-# Актуальные модели Groq (сентябрь 2026): llama-3.x сняты с аккаунта,
-# доступны groq/compound, openai/gpt-oss-*, qwen/qwen3.x-27b.
+# --- LLM-мозг (Groq, fallback) ---
 GROQ_CHAT_MODEL = os.environ.get("GROQ_CHAT_MODEL", "groq/compound")
 GROQ_CHAT_FALLBACK_MODEL = os.environ.get("GROQ_CHAT_FALLBACK_MODEL", "qwen/qwen3.8-27b")
 LLM_CONTEXT_SIZE = max(1, int(os.environ.get("LLM_CONTEXT_SIZE", "10")))
+
+# --- Web Bridge (Playwright CDP → Gemini) ---
+CDP_URL = os.environ.get("CDP_URL", "http://127.0.0.1:9222").strip()
+GEMINI_RESPONSE_TIMEOUT = int(os.environ.get("GEMINI_RESPONSE_TIMEOUT", "240"))
 
 # --- Google Docs синк (опционально) ---
 GOOGLE_DOC_WEBHOOK_URL = os.environ.get("GOOGLE_DOC_WEBHOOK_URL", "").strip()
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 GOOGLE_DOC_ID = os.environ.get("GOOGLE_DOC_ID", "").strip()
 
-DB_PATH = os.environ.get("DB_PATH", "/data/context.db")
+DATA_DIR = os.environ.get("DATA_DIR", "/data").strip()
+DB_PATH = os.environ.get("DB_PATH", os.path.join(DATA_DIR, "context.db"))

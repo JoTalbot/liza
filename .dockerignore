@@ -5,3 +5,6 @@ __pycache__
 *.db
 *.ogg
 .venv
+.deploy
+browser
+.github

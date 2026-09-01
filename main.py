@@ -1,4 +1,4 @@
-"""Liza — Telegram-бот: ИИ-компаньон с памятью + реалтайм-синк в Google Docs."""
+"""Liza — Telegram-бот: Web Bridge (Gemini Advanced + Extended Thinking) + память + Google Docs."""
 import asyncio
 import logging
 
@@ -12,6 +12,7 @@ import google_sync
 from ai_brain import GroqBrain
 from database import Database
 from transcriber import GroqTranscriber
+from web_bridge import WebBridge
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -22,10 +23,11 @@ router = Router()
 
 db = Database()
 transcriber = GroqTranscriber(config.GROQ_API_KEYS)
-brain = GroqBrain(config.GROQ_API_KEYS)
+brain = GroqBrain(config.GROQ_API_KEYS)      # fallback, если Web Bridge недоступен
+bridge = WebBridge(config.CDP_URL)           # основной канал — Gemini через CDP
 
 ALLOWED = set(config.ALLOWED_USER_IDS)
-MAX_REPLY = 4000  # Telegram-лимит на длину сообщения
+MAX_REPLY = 4000
 
 
 def is_allowed(message: Message) -> bool:
@@ -48,12 +50,30 @@ async def cmd_start(message: Message) -> None:
         return
     await message.answer(
         "👋 Привет! Я **ЛИЗА** — твой ИИ-компаньон и второй мозг. 🤖\n\n"
-        "Пиши мне текстом или голосовыми — я отвечаю и запоминаю всё.\n\n"
+        "Я работаю через **Gemini (Advanced + Extended Thinking)** в выделенном чате.\n\n"
+        "Пиши текстом или голосовыми — я отвечаю и запоминаю всё.\n\n"
         "Команды:\n"
         "• /start — это сообщение\n"
+        "• /status — статус Web Bridge\n"
         "• /dump [n] — последние n записей из памяти",
         parse_mode="Markdown",
     )
+
+
+@router.message(Command("status"))
+async def cmd_status(message: Message) -> None:
+    if not is_allowed(message):
+        await message.answer("⛔ Доступ запрещён.")
+        return
+    lines = [
+        "🔧 **Статус:**",
+        f"• CDP: {'✅ подключено' if bridge._connected else '⏳ не подключено'}",
+        f"• Чат Gemini: {bridge.chat_url or 'не создан'}",
+        f"• Модель: {bridge.current_model or 'не выбрана'}",
+        f"• Память: {db.count_notes()} записей",
+        f"• Google Docs синк: {'✅' if google_sync.is_configured() else '—'}",
+    ]
+    await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
 @router.message(Command("dump"))
@@ -86,21 +106,39 @@ async def cmd_dump(message: Message) -> None:
 
 
 async def _reply_to(message: Message, status: Message | None, user_input: str, note_id: int) -> None:
-    """Общий конвейер: (вход уже сохранён) -> LLM -> ответ -> синк."""
+    """Конвейер: Web Bridge (Gemini) → при ошибке Groq-fallback → сохранить → ответить."""
+    reply = None
+    source = "unknown"
     try:
         if status:
-            await status.edit_text("💭 Думаю…")
+            await status.edit_text("🌐 Связываюсь с Gemini…")
         else:
-            await message.answer_chat_action(ChatAction.TYPING)
-        reply = await asyncio.to_thread(brain.reply, db, note_id, user_input)
+            await message.answer_chat_action(action=ChatAction.TYPING)
+        reply = await bridge.send_prompt_to_chat(user_input)
+        if not reply:
+            raise RuntimeError("Пустой ответ от Gemini")
+        source = "gemini"
+        log.info("Ответ получен из Gemini (%d симв.)", len(reply))
     except Exception as exc:  # noqa: BLE001
-        log.exception("LLM failed")
-        reply = f"😵 Упс, я споткнулась: {exc}"
+        log.warning("Web Bridge недоступен (%s) — fallback к Groq", exc)
+        try:
+            if status:
+                await status.edit_text("💭 Думаю…")
+            reply = await asyncio.to_thread(brain.reply, db, note_id, user_input)
+            source = "groq"
+        except Exception as exc2:  # noqa: BLE001
+            log.exception("Groq fallback не сработал")
+            reply = f"😵 Упс, всё сломалось: {exc2}"
+            source = "none"
 
     db.add_note("assistant", reply)
     _sync("assistant", reply)
+
     if status:
-        await status.edit_text(_clip(reply))
+        try:
+            await status.edit_text(_clip(reply))
+        except Exception:  # noqa: BLE001
+            await message.answer(_clip(reply))
     else:
         await message.answer(_clip(reply))
 
@@ -154,11 +192,20 @@ async def on_other(message: Message) -> None:
 async def main() -> None:
     dp.include_router(router)
     await bot.delete_webhook(drop_pending_updates=True)
+
+    # пробуем подключиться к браузеру при старте (не фатально)
+    try:
+        await bridge.ensure_ready(retries=2, delay=3)
+        await bridge.ensure_dedicated_chat()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Web Bridge недоступен при старте: %s", exc)
+
     log.info(
-        "Bot started | allowed=%s | google_sync=%s | chat_model=%s",
+        "Bot started | allowed=%s | cdp=%s | google_sync=%s | chat_url=%s",
         sorted(ALLOWED),
+        config.CDP_URL,
         google_sync.is_configured(),
-        config.GROQ_CHAT_MODEL,
+        bridge.chat_url or "-",
     )
     await dp.start_polling(bot)
 

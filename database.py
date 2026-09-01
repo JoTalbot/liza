@@ -43,3 +43,6 @@ class Database:
         )
         rows = cur.fetchall()
         return list(reversed(rows))
+
+    def count_notes(self) -> int:
+        return self.conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]

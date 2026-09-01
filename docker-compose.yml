@@ -1,0 +1,29 @@
+services:
+  browser:
+    build:
+      context: ./browser
+    container_name: liza-browser
+    restart: unless-stopped
+    ports:
+      - "6080:6080"   # noVNC web-интерфейс
+      - "9222:9222"   # CDP debugging port
+    environment:
+      - TZ=UTC
+      - START_URL=https://gemini.google.com/app
+      # - VNC_PASSWORD=smth  # опционально: пароль на noVNC
+    volumes:
+      - /opt/liza_chrome_profile:/config/profile
+    shm_size: "1gb"
+
+  bot:
+    build: .
+    container_name: liza-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - CDP_URL=http://browser:9222
+    volumes:
+      - /opt/liza_data:/data
+    depends_on:
+      - browser

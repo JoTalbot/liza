@@ -36,7 +36,7 @@ jobs:
             cd /home/ubuntu
             rm -rf liza
             git clone --depth 1 https://github.com/JoTalbot/liza.git liza
-            sudo mkdir -p /opt/liza_data
+            sudo mkdir -p /opt/liza_data /opt/liza_chrome_profile
 
       - name: Upload .env to server
         uses: appleboy/scp-action@v0.1.7
@@ -47,7 +47,7 @@ jobs:
           source: ".env"
           target: "/home/ubuntu/liza"
 
-      - name: Build and run container
+      - name: Compose up
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 129.213.177.56
@@ -59,12 +59,17 @@ jobs:
             grep -q '^BOT_TOKEN=.\+' .env || { echo '!! BOT_TOKEN пуст'; exit 1; }
             grep -q '^ALLOWED_USER_ID=.\+' .env || { echo '!! ALLOWED_USER_ID пуст'; exit 1; }
             grep -q '^GROQ_API_KEYS=.\+' .env || { echo '!! GROQ_API_KEYS пуст'; exit 1; }
-            echo '== .env на месте, значения непустые =='
-            sudo docker stop liza-bot 2>/dev/null || true
-            sudo docker rm liza-bot 2>/dev/null || true
-            sudo docker build -t liza-bot .
-            sudo docker run -d --name liza-bot --restart unless-stopped -v /opt/liza_data:/data --env-file .env liza-bot
-            sleep 6
-            sudo docker ps --filter name=liza-bot
-            echo '== Логи =='
-            sudo docker logs liza-bot 2>&1 | tail -8
+            sudo docker compose version
+            sudo docker stop liza-bot liza-browser 2>/dev/null || true
+            sudo docker rm liza-bot liza-browser 2>/dev/null || true
+            sudo docker compose up -d --build
+            sleep 15
+            echo '== docker compose ps =='
+            sudo docker compose ps
+            echo '== bot logs =='
+            sudo docker logs liza-bot 2>&1 | tail -10
+            echo '== CDP check =='
+            curl -s -m 8 http://localhost:9222/json/version | head -c 200 || echo 'CDP ещё не готов'
+            echo ''
+            echo '== noVNC check =='
+            curl -s -m 8 -o /dev/null -w 'noVNC HTTP %{http_code}\n' http://localhost:6080/vnc.html || echo 'noVNC ещё не готов'
