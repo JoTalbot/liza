@@ -122,9 +122,13 @@ jobs:
             sudo cp /home/ubuntu/liza/systemd/telegram-hermes.service /etc/systemd/system/ 2>/dev/null || true
             # .telegram.env из .env (токен того же бота)
             sudo bash -c 'grep -E "^(BOT_TOKEN|ALLOWED_USER_ID)=" /home/ubuntu/liza/.env > /opt/liza-mock/.telegram.env; chmod 600 /opt/liza-mock/.telegram.env'
+            # права на память: systemd-сервисы (ubuntu) пишут в /opt/liza_data
+            sudo chown -R ubuntu:ubuntu /opt/liza_data 2>/dev/null || true
             sudo systemctl daemon-reload
             sudo systemctl enable --now liza-mock 2>/dev/null || true
-            sleep 2
+            sudo systemctl enable --now telegram-hermes 2>/dev/null || true
+            sudo systemctl restart liza-mock telegram-hermes 2>/dev/null || true
+            sleep 3
             echo '== mock health =='
             curl -s -m 10 http://127.0.0.1:8000/healthz || echo 'mock не готов'
             echo ''

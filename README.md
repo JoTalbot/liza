@@ -157,3 +157,16 @@ Telegram -> telegram_hermes_bridge.py (aiogram, systemd)
 - `.telegram.env` (токен + allowed) создаётся из `.env` при деплое.
 - Чтобы вернуть старый прямой канал: поставь `DEPLOY_LEGACY_BOT=1` в переменных
   репозитория и перезапусти workflow (не забудь остановить telegram-hermes).
+
+## Память Лизы (самое важное)
+
+Память хранится в **`/opt/liza_data/context.db`** (тот же файл, что был у
+Telegram-бота — старые записи сохраняются):
+
+- **`[MEM_UPDATE: ...]`** из ответов модели автоматически сохраняются в таблицу
+  `memory_updates` (mock_openai_rpa.py);
+- **диалог** (user/assistant) пишется в таблицу `conversations`;
+- **вики Liza_Brain** (`/opt/liza_data/liza_brain/*.txt`) + последние факты +
+  недавний диалог **подмешиваются в каждый запрос** к Gemini — Лизa помнит
+  контекст между сообщениями даже при `hermes -z`;
+- команда **`/memory [n]`** в Telegram показывает последние n запомненных фактов.

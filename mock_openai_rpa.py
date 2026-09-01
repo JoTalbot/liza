@@ -30,9 +30,13 @@ import json
 import logging
 import os
 import re
+import sqlite3
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -63,6 +67,152 @@ PORT = int(os.environ.get("MOCK_PORT", "8000"))
 GENERATION_TIMEOUT = float(os.environ.get("MOCK_TIMEOUT", "300"))
 FALLBACK_RELOAD_AFTER = float(os.environ.get("MOCK_FALLBACK_AFTER", "240"))
 MAX_TOKENS_DEFAULT = int(os.environ.get("MOCK_MAX_TOKENS", "2048"))
+
+# --- Память Лизы (самое важное!) ---
+# Та же база, что была у Telegram-бота: /opt/liza_data/context.db (volume хоста).
+# Вики Liza_Brain — файлы, скачанные с Google Drive.
+MEMORY_DB = os.environ.get("MOCK_MEMORY_DB", "/opt/liza_data/context.db")
+LIZA_BRAIN_DIR = os.environ.get("LIZA_BRAIN_DIR", "/opt/liza_data/liza_brain")
+WIKI_MAX_CHARS = int(os.environ.get("MOCK_WIKI_MAX", "5000"))
+MEMORY_INJECT_MAX = int(os.environ.get("MOCK_MEMORY_INJECT_MAX", "5000"))
+RECENT_TURNS = int(os.environ.get("MOCK_RECENT_TURNS", "10"))
+RECENT_MEM_UPDATES = int(os.environ.get("MOCK_RECENT_MEM_UPDATES", "12"))
+
+
+class MemoryStore:
+    """Персистентная память Лизы: MEM_UPDATE + диалог + вики Liza_Brain.
+
+    Использует ту же SQLite-базу /opt/liza_data/context.db, что и прежний
+    Telegram-бот — старые записи памяти сохраняются и доступны.
+    """
+
+    def __init__(self, db_path: str = MEMORY_DB) -> None:
+        self.db_path = db_path
+        self._lock = threading.Lock()
+        self._init()
+
+    def _conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, timeout=15)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init(self) -> None:
+        try:
+            with self._lock, self._conn() as conn:
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS memory_updates (
+                        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp DATETIME,
+                        raw_tag   TEXT,
+                        synced    BOOLEAN DEFAULT 0
+                    )"""
+                )
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS conversations (
+                        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp DATETIME,
+                        user_id   INTEGER,
+                        role      TEXT,
+                        content   TEXT
+                    )"""
+                )
+                conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Память: не удалось инициализировать БД (%s) — продолжаю без неё", exc)
+
+    # --- запись ---
+    def add_memory_update(self, payload: str) -> None:
+        if not payload:
+            return
+        try:
+            with self._lock, self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO memory_updates (timestamp, raw_tag, synced) VALUES (?, ?, ?)",
+                    (datetime.now(timezone.utc).isoformat(timespec="seconds"), payload, 1),
+                )
+                conn.commit()
+            log.info("💾 MEM_UPDATE сохранён: %.120s", payload)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Память: не сохранил MEM_UPDATE: %s", exc)
+
+    def add_message(self, role: str, content: str) -> None:
+        if not content:
+            return
+        try:
+            with self._lock, self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO conversations (timestamp, user_id, role, content) VALUES (?, ?, ?, ?)",
+                    (datetime.now(timezone.utc).isoformat(timespec="seconds"), 0, role, content[:8000]),
+                )
+                conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Память: не сохранил сообщение: %s", exc)
+
+    # --- чтение ---
+    def recent_turns(self, n: int = RECENT_TURNS) -> list[str]:
+        try:
+            with self._lock, self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT role, content FROM conversations ORDER BY id DESC LIMIT ?", (n,)
+                ).fetchall()
+            out: list[str] = []
+            for r in reversed(rows):
+                role = "U" if r["role"] == "user" else "A"
+                out.append(f"{role}: {str(r['content'])[:500]}")
+            return out
+        except Exception:  # noqa: BLE001
+            return []
+
+    def recent_memory(self, n: int = RECENT_MEM_UPDATES) -> list[str]:
+        try:
+            with self._lock, self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT raw_tag FROM memory_updates ORDER BY id DESC LIMIT ?", (n,)
+                ).fetchall()
+            return [str(r["raw_tag"])[:400] for r in reversed(rows)]
+        except Exception:  # noqa: BLE001
+            return []
+
+    def wiki_text(self, max_chars: int = WIKI_MAX_CHARS) -> str:
+        try:
+            d = Path(LIZA_BRAIN_DIR)
+            if not d.exists():
+                return ""
+            chunks: list[str] = []
+            total = 0
+            for f in sorted(d.glob("*.txt")):
+                t = (f.read_text(encoding="utf-8", errors="ignore") or "").strip()
+                if not t:
+                    continue
+                if total + len(t) > max_chars:
+                    t = t[: max_chars - total]
+                chunks.append(f"[{f.stem}]\n{t}")
+                total += len(t)
+                if total >= max_chars:
+                    break
+            return "\n\n".join(chunks)
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def build_context(self) -> str:
+        """Собирает блок памяти: база знаний (вики) + запомненные факты + недавний диалог."""
+        parts: list[str] = []
+        w = self.wiki_text()
+        if w:
+            parts.append("БАЗА ЗНАНИЙ ЛИЗЫ:\n" + w[:WIKI_MAX_CHARS])
+        m = self.recent_memory()
+        if m:
+            parts.append("ЧТО ЛИЗА ЗАПОМНИЛА РАНЕЕ:\n" + "\n".join(f"- {x}" for x in m))
+        t = self.recent_turns()
+        if t:
+            parts.append("НЕДАВНИЙ ДИАЛОГ:\n" + "\n".join(t))
+        ctx = "\n\n".join(parts)
+        if len(ctx) > MEMORY_INJECT_MAX:
+            ctx = ctx[:MEMORY_INJECT_MAX]
+        return ctx
+
+
+memory = MemoryStore()
 
 # --- селекторы (с запасными вариантами, как в web_bridge Лизы) ---
 INPUT_SELECTORS = [
@@ -300,12 +450,26 @@ class GemBridge:
                 if snap == last_snapshot:
                     stable += 1
                     if stable >= 2:
+                        self._store_from_reply(snap)
                         return _clean_answer(snap)
                 else:
                     stable = 0
             last_snapshot = snap
             await asyncio.sleep(0.5)
         raise asyncio.TimeoutError
+
+    def _store_from_reply(self, raw: str) -> None:
+        """Сохраняет в память: [MEM_UPDATE] из ответа + сам ответ в диалог."""
+        try:
+            for m in MEM_UPDATE_RE.finditer(raw or ""):
+                p = m.group(1).strip()
+                if p:
+                    memory.add_memory_update(p)
+            cleaned = _clean_answer(raw or "")
+            if cleaned:
+                memory.add_message("assistant", cleaned)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Память: ошибка сохранения ответа: %s", exc)
 
     async def _reload_page(self) -> None:
         try:
@@ -374,15 +538,29 @@ def _build_messages(payload: dict) -> str:
     if not parts:
         raise ValueError("messages пуст")
     prompt = "\n\n".join(parts)
-    # короткая директива перед каждым запросом: отвечать по-человечески,
-    # без технических статусов/планов/перечислений (как в Telegram-боте Лизы)
+
+    # директива: отвечать по-человечески, без тех.статусов
     directive = (
-        "Отвечай коротко и по-человечески, сразу по сути. Не начинай с технических "
-        "статусов, планов действий, перечислений проектов/локаций/оборудования, "
-        "не упоминай файлы, протоколы, L0-L3 и Wiki-документы. Одно-два предложения, "
-        "если не просят развёрнуто.\n\n"
+        "Ты — ЛИЗА, живой ИИ-компаньон и второй мозг Кости. Отвечай коротко и "
+        "по-человечески, сразу по сути, с теплотой и лёгким юмором. Не начинай "
+        "с технических статусов, планов действий, перечислений проектов/локаций/"
+        "оборудования, не упоминай файлы, протоколы, L0-L3 и Wiki-документы. "
+        "Если узнаёшь что-то важное о Косте или его делах — можешь подтвердить "
+        "запоминание тегом [MEM_UPDATE: суть] в конце ответа.\n\n"
     )
-    return directive + prompt
+
+    # ПАМЯТЬ (самое важное): вики + запомненные факты + недавний диалог
+    ctx = memory.build_context()
+    if ctx:
+        ctx_block = (
+            "Ниже — твоя память: база знаний, ранее запомненные факты и недавний "
+            "диалог. Используй её, чтобы помнить Костю и контекст разговора.\n\n"
+            f"{ctx}\n\n"
+        )
+    else:
+        ctx_block = ""
+
+    return directive + ctx_block + prompt
 
 
 def _resp_id() -> str:
@@ -451,6 +629,19 @@ async def chat_completions(request: Request) -> Any:
         return JSONResponse(status_code=400, content={"error": {"message": str(exc), "type": "invalid_request_error"}})
 
     log.info("Запрос: model=%s stream=%s chars=%d", model, stream, len(prompt))
+
+    # запоминаем последнее сообщение пользователя (в память Лизы)
+    try:
+        last_user = next(
+            (str(m.get("content", "")).strip()
+             for m in reversed(payload.get("messages") or [])
+             if m.get("role") == "user" and str(m.get("content", "")).strip()),
+            "",
+        )
+        if last_user:
+            memory.add_message("user", last_user)
+    except Exception:  # noqa: BLE001
+        pass
 
     try:
         assert bridge is not None

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Telegram-мост -> Hermes CLI -> Mock OpenAI RPA.
+"""Telegram-мост -> Hermes CLI -> Mock OpenAI RPA (с памятью Лизы).
 
-Лёгкий aiogram-демон: входящее сообщение уходит в `hermes run --query "..."`,
+Лёгкий aiogram-демон: входящее сообщение уходит в `hermes -z "..."`,
 ответ возвращается в чат, разбитый на блоки до 4000 символов.
-
-Требует: BOT_TOKEN, ALLOWED_USER_ID (запятая), HERMES_BIN (путь к hermes).
+Память Лизы хранится в /opt/liza_data/context.db (тот же файл, что у бота):
+  - /memory [n] — показать последние n запомненных фактов ([MEM_UPDATE]);
+  - диалог и MEM_UPDATE сохраняет mock_openai_rpa.py.
 """
 from __future__ import annotations
 
@@ -12,9 +13,12 @@ import asyncio
 import logging
 import os
 import shlex
+import sqlite3
 import subprocess
+from datetime import datetime, timezone
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command
 from aiogram.types import Message
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -27,6 +31,7 @@ HERMES_BIN = os.environ.get(
     os.path.expanduser("~/hermes-venv/bin/hermes"),  # путь по умолчанию на Oracle VPS
 )
 MAX_BLOCK = int(os.environ.get("MAX_BLOCK", "4000"))
+MEMORY_DB = os.environ.get("MOCK_MEMORY_DB", "/opt/liza_data/context.db")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -47,7 +52,7 @@ def _chunks(text: str, size: int = MAX_BLOCK) -> list[str]:
     return parts
 
 
-def _ask_hermes(query: str, timeout: int = 180) -> str:
+def _ask_hermes(query: str, timeout: int = 300) -> str:
     cmd = f"{shlex.quote(HERMES_BIN)} -z {shlex.quote(query)}"
     proc = subprocess.run(
         cmd, shell=True, capture_output=True, text=True, timeout=timeout,
@@ -58,14 +63,65 @@ def _ask_hermes(query: str, timeout: int = 180) -> str:
     return out
 
 
+def _memory_text(n: int = 10) -> str:
+    """Последние n запомненных фактов ([MEM_UPDATE]) из SQLite."""
+    try:
+        conn = sqlite3.connect(MEMORY_DB, timeout=10)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT timestamp, raw_tag FROM memory_updates ORDER BY id DESC LIMIT ?", (n,)
+        ).fetchall()
+        conn.close()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Не удалось прочитать память: %s", exc)
+        return "⚠️ Не удалось прочитать память."
+    if not rows:
+        return "🧠 Память пуста — фактов ([MEM_UPDATE]) пока нет."
+    lines = [f"🧠 Последние **{len(rows)}** запомненных фактов:"]
+    for i, r in enumerate(reversed(rows), start=1):
+        content = (str(r["raw_tag"]) or "").replace("\n", " ")[:250]
+        lines.append(f"{i}. {content}")
+    return "\n".join(lines)
+
+
+@dp.message(Command("start", "help"))
+async def cmd_start(message: Message) -> None:
+    if message.from_user is None or message.from_user.id not in ALLOWED:
+        return
+    await message.answer(
+        "👋 **ЛИЗА** на связи (через Hermes + Gemini).\n\n"
+        "Просто пиши — я помню контекст и факты о тебе.\n"
+        "• /memory [n] — последние n запомненных фактов",
+        parse_mode="Markdown",
+    )
+
+
+@dp.message(Command("memory"))
+async def cmd_memory(message: Message) -> None:
+    if message.from_user is None or message.from_user.id not in ALLOWED:
+        return
+    args = (message.text or "").split()
+    n = 10
+    if len(args) > 1:
+        try:
+            n = int(args[1])
+        except ValueError:
+            n = 10
+    n = max(1, min(n, 50))
+    await message.answer(_memory_text(n), parse_mode="Markdown")
+
+
 @dp.message(F.text)
 async def on_text(message: Message) -> None:
     if message.from_user is None or message.from_user.id not in ALLOWED:
         return
-    status = await message.answer("🤖 Hermes думает…")
+    status = await message.answer("🤖 ЛИЗА думает…")
     try:
         reply = await asyncio.to_thread(_ask_hermes, message.text)
-        await status.delete()
+        try:
+            await status.delete()
+        except Exception:  # noqa: BLE001
+            pass
         for block in _chunks(reply):
             await message.answer(block)
     except Exception as exc:  # noqa: BLE001
@@ -77,7 +133,6 @@ async def on_text(message: Message) -> None:
 
 
 async def main() -> None:
-    dp.message.register(on_text)
     await bot.delete_webhook(drop_pending_updates=True)
     log.info("Telegram-Hermes мост запущен | allowed=%s", sorted(ALLOWED))
     await dp.start_polling(bot)
@@ -88,3 +143,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         log.info("stopped")
+
