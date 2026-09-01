@@ -6,8 +6,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=ubuntu
-Group=ubuntu
+# ВЫПОЛНЕНИЕ КОМАНД ЛИЗЫ — ОТ ROOT (shell-инструменты mock)
+User=root
+Group=root
 WorkingDirectory=/opt/liza-mock
 Environment=CDP_URL=http://127.0.0.1:9222
 Environment=GEMINI_GEM_URL=https://gemini.google.com/gem/2b0f0c89e8e0/75b110e980e7e994

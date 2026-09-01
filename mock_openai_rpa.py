@@ -138,6 +138,12 @@ class MemoryStore:
                     )"""
                 )
                 conn.commit()
+            # mock может работать от root (shell-инструменты): открываем доступ
+            # к БД для остальных сервисов (telegram-мост, дайджест — User=ubuntu)
+            try:
+                os.chmod(self.db_path, 0o666)
+            except Exception:  # noqa: BLE001
+                pass
         except Exception as exc:  # noqa: BLE001
             log.warning("Память: не удалось инициализировать БД (%s) — продолжаю без неё", exc)
 
