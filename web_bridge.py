@@ -44,12 +44,12 @@ def build_starter_prompt(context: str = "") -> str:
     «автономный ассистент / загрузи личность».
     """
     return (
-        "Привет! Я хочу настроить для тебя роль помощника. "
-        "Твоё имя — Лиза. Ты моя личная ассистентка и «второй мозг». "
-        "Отвечай на русском, кратко, по делу, с лёгким юмором. "
-        "Если в моих сообщениях появится важная информация для запоминания, "
-        "добавляй в конец ответа тег [MEM_UPDATE: суть обновления]. "
-        "Подтверди, что готова (одним предложением)."
+        "Привет! Давай договоримся об одном: "
+        "1) называй меня по имени, которое я напишу в следующем сообщении; "
+        "2) отвечай на русском, кратко и по делу; "
+        "3) если я скажу «запомни» или пришлю важную информацию, подтверждай "
+        "запоминание тегом [MEM_UPDATE: суть]. "
+        "Просто подтверди, что поняла правила, одним коротким предложением."
     )
 
 
@@ -394,28 +394,24 @@ class WebBridge:
             await self._try_enable_extended_thinking()
             await asyncio.sleep(1)
 
-            # стартовый промпт: простая активация персоны (короткий — не триггерит safety)
-            try:
-                confirmation = await self._submit_and_extract(build_starter_prompt())
-                self._init_confirmation = confirmation
-                log.info(
-                    "Инициализация Лизы: подтверждение получено (%d симв.): %.120s",
-                    len(confirmation), confirmation,
-                )
-            except Exception as exc:  # noqa: BLE001
-                self._init_confirmation = ""
-                log.warning("Стартовый промпт Лизы не удался: %s", exc)
-
-            # отдельным сообщением передаём вики-контекст (личность/память/проекты)
+            # инициализация: передаём вики-контекст (личность/память/проекты из
+            # папки Liza_Brain). Отдельный «промпт роли» не нужен — в 00_Master
+            # уже есть личность Лизы и инструкция по активации.
             try:
                 import drive_sync
                 context = drive_sync.build_persona_context()
                 if context:
                     log.info("Передаю вики-контекст: %d симв.", len(context))
-                    await self._submit_and_extract(build_context_prompt(context))
-                    log.info("Вики-контекст отправлен в чат")
+                    confirmation = await self._submit_and_extract(build_context_prompt(context))
+                    self._init_confirmation = confirmation
+                    log.info("Инициализация Лизы: %d симв. ответа", len(confirmation))
+                else:
+                    log.warning("Вики-контекст пуст — отправляю базовый промпт")
+                    confirmation = await self._submit_and_extract(build_starter_prompt())
+                    self._init_confirmation = confirmation
             except Exception as exc:  # noqa: BLE001
-                log.warning("Не удалось передать вики-контекст: %s", exc)
+                self._init_confirmation = ""
+                log.warning("Инициализация Лизы не удалась: %s", exc)
 
             url = self._page.url or GEMINI_APP_URL
             self.chat_url = url
