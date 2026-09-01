@@ -37,21 +37,32 @@ GEMINI_DRIVE_FOLDER = os.environ.get(
 
 # Базовый промпт (без контекста файлов — он подставляется при инициализации)
 def build_starter_prompt(context: str = "") -> str:
-    base = (
-        "Ты — Лиза, мой автономный ассистент и второй мозг. "
-        "Загрузи личность, память и следуй всем инструкциям. "
-        "Правило: если появляется важная новая информация для сохранения в память, "
-        "добавь в конце ответа тег [MEM_UPDATE: суть обновления]. "
-        "Подтверди готовность!"
+    """Стартовый промпт: простая активация персоны.
+
+    Контекст вики отправляется ОТДЕЛЬНЫМ сообщением (см. init_dedicated_chat),
+    т.к. Gemini отказывается выполнять большие промпты с формулировками
+    «автономный ассистент / загрузи личность».
+    """
+    return (
+        "Привет! Я хочу настроить для тебя роль помощника. "
+        "Твоё имя — Лиза. Ты моя личная ассистентка и «второй мозг». "
+        "Отвечай на русском, кратко, по делу, с лёгким юмором. "
+        "Если в моих сообщениях появится важная информация для запоминания, "
+        "добавляй в конец ответа тег [MEM_UPDATE: суть обновления]. "
+        "Подтверди, что готова (одним предложением)."
     )
-    if context:
-        # НЕ упоминаем Google Drive/ссылки — Gemini не открывает ссылки и отказывает.
-        # Просто встраиваем текст вики как контекст для запоминания.
-        return (
-            f"Это мой личный контекст (память Лизы), запомни его полностью и "
-            f"следуй ему во всех дальнейших ответах:\n\n{context}\n\n{base}"
-        )
-    return base
+
+
+# Промпт для передачи контекста вики отдельным сообщением
+def build_context_prompt(context: str = "") -> str:
+    if not context:
+        return ""
+    return (
+        "Запомни этот контекст — это моя база знаний (личность, проекты, люди, "
+        "юмор). Используй его в наших дальнейших разговорах:\n\n"
+        f"{context}\n\n"
+        "Подтверди одним словом, что запомнила."
+    )
 
 STARTER_PROMPT = build_starter_prompt()
 
@@ -383,13 +394,9 @@ class WebBridge:
             await self._try_enable_extended_thinking()
             await asyncio.sleep(1)
 
-            # стартовый промпт: персона + вики-файлы Liza_Brain с Google Drive
+            # стартовый промпт: простая активация персоны (короткий — не триггерит safety)
             try:
-                import drive_sync
-                context = drive_sync.build_persona_context()
-                prompt = build_starter_prompt(context)
-                log.info("Стартовый промпт: %d симв. вики-контекста", len(context))
-                confirmation = await self._submit_and_extract(prompt)
+                confirmation = await self._submit_and_extract(build_starter_prompt())
                 self._init_confirmation = confirmation
                 log.info(
                     "Инициализация Лизы: подтверждение получено (%d симв.): %.120s",
@@ -398,6 +405,17 @@ class WebBridge:
             except Exception as exc:  # noqa: BLE001
                 self._init_confirmation = ""
                 log.warning("Стартовый промпт Лизы не удался: %s", exc)
+
+            # отдельным сообщением передаём вики-контекст (личность/память/проекты)
+            try:
+                import drive_sync
+                context = drive_sync.build_persona_context()
+                if context:
+                    log.info("Передаю вики-контекст: %d симв.", len(context))
+                    await self._submit_and_extract(build_context_prompt(context))
+                    log.info("Вики-контекст отправлен в чат")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Не удалось передать вики-контекст: %s", exc)
 
             url = self._page.url or GEMINI_APP_URL
             self.chat_url = url
